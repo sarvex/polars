@@ -31,7 +31,7 @@ def _check_empty(b: BytesIO, context: str, read_position: int | None = None) -> 
     if not b.getbuffer().nbytes:
         hint = (
             f" (buffer position = {read_position}; try seek(0) before reading?)"
-            if context in ("StringIO", "BytesIO") and read_position
+            if context in {"StringIO", "BytesIO"} and read_position
             else ""
         )
         raise NoDataError(f"empty CSV data from {context}{hint}")
@@ -163,23 +163,30 @@ def _prepare_file_arg(
         if _FSSPEC_AVAILABLE:
             from fsspec.utils import infer_storage_options
 
-            if not has_non_utf8_non_utf8_lossy_encoding:
-                if infer_storage_options(file)["protocol"] == "file":
-                    return managed_file(normalise_filepath(file, check_not_dir))
+            if (
+                not has_non_utf8_non_utf8_lossy_encoding
+                and infer_storage_options(file)["protocol"] == "file"
+            ):
+                return managed_file(normalise_filepath(file, check_not_dir))
             kwargs["encoding"] = encoding
             return fsspec.open(file, **kwargs)
 
-    if isinstance(file, list) and bool(file) and all(isinstance(f, str) for f in file):
-        if _FSSPEC_AVAILABLE:
-            from fsspec.utils import infer_storage_options
+    if (
+        isinstance(file, list)
+        and bool(file)
+        and all(isinstance(f, str) for f in file)
+        and _FSSPEC_AVAILABLE
+    ):
+        from fsspec.utils import infer_storage_options
 
-            if not has_non_utf8_non_utf8_lossy_encoding:
-                if all(infer_storage_options(f)["protocol"] == "file" for f in file):
-                    return managed_file(
-                        [normalise_filepath(f, check_not_dir) for f in file]
-                    )
-            kwargs["encoding"] = encoding
-            return fsspec.open_files(file, **kwargs)
+        if not has_non_utf8_non_utf8_lossy_encoding and all(
+            infer_storage_options(f)["protocol"] == "file" for f in file
+        ):
+            return managed_file(
+                [normalise_filepath(f, check_not_dir) for f in file]
+            )
+        kwargs["encoding"] = encoding
+        return fsspec.open_files(file, **kwargs)
 
     if isinstance(file, str):
         file = normalise_filepath(file, check_not_dir)

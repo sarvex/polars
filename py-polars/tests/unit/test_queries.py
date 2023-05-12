@@ -83,22 +83,22 @@ def test_agg_after_head() -> None:
 
 
 def test_overflow_uint16_agg_mean() -> None:
-    assert (
-        pl.DataFrame(
-            {
-                "col1": ["A" for _ in range(1025)],
-                "col3": [64 for i in range(1025)],
-            }
-        )
-        .with_columns(
-            [
-                pl.col("col3").cast(pl.UInt16),
-            ]
-        )
-        .groupby(["col1"])
-        .agg(pl.col("col3").mean())
-        .to_dict(False)
-    ) == {"col1": ["A"], "col3": [64.0]}
+    assert pl.DataFrame(
+        {"col1": ["A" for _ in range(1025)], "col3": [64 for _ in range(1025)]}
+    ).with_columns(
+        [
+            pl.col("col3").cast(pl.UInt16),
+        ]
+    ).groupby(
+        ["col1"]
+    ).agg(
+        pl.col("col3").mean()
+    ).to_dict(
+        False
+    ) == {
+        "col1": ["A"],
+        "col3": [64.0],
+    }
 
 
 def test_binary_on_list_agg_3345() -> None:

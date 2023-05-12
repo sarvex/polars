@@ -110,9 +110,9 @@ def test_timezone_aware_strptime(tz_string: str, timedelta: timedelta) -> None:
     times = pl.DataFrame(
         {
             "delivery_datetime": [
-                "2021-12-05 06:00:00" + tz_string,
-                "2021-12-05 07:00:00" + tz_string,
-                "2021-12-05 08:00:00" + tz_string,
+                f"2021-12-05 06:00:00{tz_string}",
+                f"2021-12-05 07:00:00{tz_string}",
+                f"2021-12-05 08:00:00{tz_string}",
             ]
         }
     )

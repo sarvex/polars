@@ -367,11 +367,9 @@ def _get_delta_lake_table(
     if delta_table_options is None:
         delta_table_options = {}
 
-    dl_tbl = deltalake.DeltaTable(
+    return deltalake.DeltaTable(
         table_uri=table_path,
         version=version,
         storage_options=storage_options,
         **delta_table_options,
     )
-
-    return dl_tbl

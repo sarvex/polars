@@ -179,9 +179,7 @@ class Expr:
         return self._to_expr(other)._pyexpr
 
     def _to_expr(self, other: Any) -> Expr:
-        if isinstance(other, Expr):
-            return other
-        return pli.lit(other)
+        return other if isinstance(other, Expr) else pli.lit(other)
 
     def _repr_html_(self) -> str:
         return self._pyexpr.to_str()
@@ -654,12 +652,10 @@ class Expr:
         """
         if more_columns:
             if isinstance(columns, str):
-                columns_str = [columns]
-                columns_str.extend(more_columns)  # type: ignore[arg-type]
+                columns_str = [columns, *more_columns]
                 return self._from_pyexpr(self._pyexpr.exclude(columns_str))
             elif is_polars_dtype(columns):
-                dtypes = [columns]
-                dtypes.extend(more_columns)
+                dtypes = [columns, *more_columns]
                 return self._from_pyexpr(self._pyexpr.exclude_dtype(dtypes))
             else:
                 raise TypeError(
@@ -2359,13 +2355,12 @@ class Expr:
                 " 'backward' or 'forward'"
             )
 
-        if value is not None:
-            value = expr_to_lit_or_expr(value, str_to_lit=True)
-            return self._from_pyexpr(self._pyexpr.fill_null(value._pyexpr))
-        else:
+        if value is None:
             return self._from_pyexpr(
                 self._pyexpr.fill_null_with_strategy(strategy, limit)
             )
+        value = expr_to_lit_or_expr(value, str_to_lit=True)
+        return self._from_pyexpr(self._pyexpr.fill_null(value._pyexpr))
 
     def fill_nan(self, fill_value: int | float | Expr | None) -> Self:
         """

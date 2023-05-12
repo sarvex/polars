@@ -195,9 +195,7 @@ def test_infinities(
     from math import isfinite
 
     def finite_float(value: Any) -> bool:
-        if isinstance(value, float):
-            return isfinite(value)
-        return False
+        return isfinite(value) if isinstance(value, float) else False
 
     assert all(finite_float(val) for val in s.to_list())
     for col in df.columns:

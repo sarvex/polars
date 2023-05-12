@@ -84,7 +84,7 @@ class Config:
 
         """
         options = json.loads(cfg)
-        os.environ.update(options.get("environment", {}))
+        os.environ |= options.get("environment", {})
         for flag, value in options.get("local", {}).items():
             if hasattr(cls, flag):
                 setattr(cls, flag, value)

@@ -240,7 +240,7 @@ def concat(
     # unpack/standardise (offers simple support for generator input)
     elems = list(items)
 
-    if not len(elems) > 0:
+    if not elems:
         raise ValueError("cannot concat empty list")
 
     out: pli.Series | pli.DataFrame | pli.LazyFrame | pli.Expr
@@ -275,9 +275,7 @@ def concat(
     else:
         raise ValueError(f"did not expect type: {type(first)} in 'pl.concat'.")
 
-    if rechunk:
-        return out.rechunk()
-    return out
+    return out.rechunk() if rechunk else out
 
 
 def _ensure_datetime(value: date | datetime) -> tuple[datetime, bool]:
@@ -474,12 +472,15 @@ def date_range(
                 f" Got: '{low.tzinfo}' and '{high.tzinfo}'."
             )
 
-        if time_zone is not None and low.tzinfo is not None:
-            if str(low.tzinfo) != time_zone:
-                raise ValueError(
-                    "Given time_zone is different from that of timezone aware datetimes."
-                    f" Given: '{time_zone}', got: '{low.tzinfo}'."
-                )
+        if (
+            time_zone is not None
+            and low.tzinfo is not None
+            and str(low.tzinfo) != time_zone
+        ):
+            raise ValueError(
+                "Given time_zone is different from that of timezone aware datetimes."
+                f" Given: '{time_zone}', got: '{low.tzinfo}'."
+            )
         if time_zone is None:
             time_zone = str(low.tzinfo)
 

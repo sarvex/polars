@@ -37,9 +37,7 @@ class StructNameSpace:
     @property
     def fields(self) -> list[str]:
         """Get the names of the fields."""
-        if getattr(self, "_s", None) is None:
-            return []
-        return self._s.struct_fields()
+        return [] if getattr(self, "_s", None) is None else self._s.struct_fields()
 
     def field(self, name: str) -> pli.Series:
         """

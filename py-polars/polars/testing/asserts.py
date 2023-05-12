@@ -76,13 +76,11 @@ def assert_frame_equal(
     if left.shape[0] != right.shape[0]:  # type: ignore[union-attr]
         raise_assert_detail(obj, "Length mismatch", left.shape, right.shape)  # type: ignore[union-attr]
 
-    left_not_right = [c for c in left.columns if c not in right.columns]
-    if left_not_right:
+    if left_not_right := [c for c in left.columns if c not in right.columns]:
         raise AssertionError(
             f"Columns {left_not_right} in left frame, but not in right."
         )
-    right_not_left = [c for c in right.columns if c not in left.columns]
-    if right_not_left:
+    if right_not_left := [c for c in right.columns if c not in left.columns]:
         raise AssertionError(
             f"Columns {right_not_left} in right frame, but not in left."
         )

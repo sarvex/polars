@@ -124,7 +124,7 @@ def _lazy_import(module_name: str) -> tuple[ModuleType, bool]:
     # check if module is AVAILABLE
     try:
         module_spec = find_spec(module_name)
-        module_available = not (module_spec is None or module_spec.loader is None)
+        module_available = module_spec is not None and module_spec.loader is not None
     except ModuleNotFoundError:
         module_available = False
 

@@ -68,7 +68,7 @@ def test_ewm_methods(
                 "adjust": adjust,
                 "ignore_nulls": ignore_nulls,
             }
-            pl_params.update(decay_param)
+            pl_params |= decay_param
             pd_params = pl_params.copy()
             if "half_life" in pl_params:
                 pd_params["halflife"] = pd_params.pop("half_life")

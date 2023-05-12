@@ -163,15 +163,15 @@ def from_dicts(
     └─────┴─────┴──────┴──────┘
 
     """
-    if not dicts and not (schema or schema_overrides):
+    if dicts or schema or schema_overrides:
+        return DataFrame(
+            data=dicts,
+            schema=schema,
+            schema_overrides=schema_overrides,
+            infer_schema_length=infer_schema_length,
+        )
+    else:
         raise NoDataError("No rows. Cannot infer schema.")
-
-    return DataFrame(
-        data=dicts,
-        schema=schema,
-        schema_overrides=schema_overrides,
-        infer_schema_length=infer_schema_length,
-    )
 
 
 @deprecated_alias(columns="schema")

@@ -186,18 +186,8 @@ def test_streaming_parquet_glob_5900(df: pl.DataFrame) -> None:
 
 
 def test_chunked_round_trip() -> None:
-    df1 = pl.DataFrame(
-        {
-            "a": [1] * 2,
-            "l": [[1] for j in range(0, 2)],
-        }
-    )
-    df2 = pl.DataFrame(
-        {
-            "a": [2] * 3,
-            "l": [[2] for j in range(0, 3)],
-        }
-    )
+    df1 = pl.DataFrame({"a": [1] * 2, "l": [[1] for _ in range(0, 2)]})
+    df2 = pl.DataFrame({"a": [2] * 3, "l": [[2] for _ in range(0, 3)]})
 
     df = df1.vstack(df2)
 

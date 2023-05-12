@@ -131,11 +131,15 @@ class LazyPolarsSlice:
         # fail on operations that require length to do efficiently
         if s.stop and s.stop < 0:
             raise ValueError("Negative stop is not supported for lazy slices")
-        if step < 0 and (start > 0 or s.stop is not None) and (start != s.stop):
-            if not (start > 0 > step and s.stop is None):
-                raise ValueError(
-                    "Negative stride is not supported in conjunction with start+stop"
-                )
+        if (
+            step < 0
+            and (start > 0 or s.stop is not None)
+            and (start != s.stop)
+            and not (start > 0 > step and s.stop is None)
+        ):
+            raise ValueError(
+                "Negative stride is not supported in conjunction with start+stop"
+            )
 
         # ---------------------------------------
         # empty slice patterns

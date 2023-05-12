@@ -50,9 +50,7 @@ def _scan_pyarrow_dataset_impl(
     DataFrame
 
     """
-    _filter = None
-    if predicate:
-        _filter = eval(predicate)
+    _filter = eval(predicate) if predicate else None
     return cast(
         pli.DataFrame, pl.from_arrow(ds.to_table(columns=with_columns, filter=_filter))
     )

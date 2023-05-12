@@ -446,19 +446,16 @@ def test_from_optional_not_available() -> None:
 
 
 def test_upcast_pyarrow_dicts() -> None:
-    # 1752
-    tbls = []
-    for i in range(128):
-        tbls.append(
-            pa.table(
-                {
-                    "col_name": pa.array(
-                        ["value_" + str(i)], pa.dictionary(pa.int8(), pa.string())
-                    ),
-                }
-            )
+    tbls = [
+        pa.table(
+            {
+                "col_name": pa.array(
+                    [f"value_{str(i)}"], pa.dictionary(pa.int8(), pa.string())
+                )
+            }
         )
-
+        for i in range(128)
+    ]
     tbl = pa.concat_tables(tbls, promote=True)
     out = cast(pl.DataFrame, pl.from_arrow(tbl))
     assert out.shape == (128, 1)

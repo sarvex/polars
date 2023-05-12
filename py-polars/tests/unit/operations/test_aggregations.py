@@ -116,7 +116,6 @@ def test_quantile_vs_numpy() -> None:
                 np_result = np.quantile(a, q)
             except IndexError:
                 np_result = None
-                pass
             if np_result:
                 # nan check
                 if np_result != np_result:

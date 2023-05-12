@@ -61,9 +61,7 @@ class BatchedCsvReader:
         dtype_slice: Sequence[PolarsDataType] | None = None
         if dtypes is not None:
             if isinstance(dtypes, dict):
-                dtype_list = []
-                for k, v in dtypes.items():
-                    dtype_list.append((k, py_type_to_dtype(v)))
+                dtype_list = [(k, py_type_to_dtype(v)) for k, v in dtypes.items()]
             elif isinstance(dtypes, Sequence):
                 dtype_slice = dtypes
             else:

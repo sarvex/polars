@@ -193,9 +193,8 @@ def _xl_setup_table_columns(
         if base_type in dtype_formats:
             fmt = dtype_formats.get(tp, dtype_formats[base_type])
             column_formats.setdefault(col, fmt)
-        if base_type in NUMERIC_DTYPES:
-            if column_totals is True:
-                total_funcs.setdefault(col, "sum")
+        if base_type in NUMERIC_DTYPES and column_totals is True:
+            total_funcs.setdefault(col, "sum")
 
     # ensure externally supplied formats are made available
     for col, fmt in column_formats.items():

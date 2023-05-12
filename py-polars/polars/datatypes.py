@@ -127,14 +127,14 @@ def _custom_reconstruct(
 class DataTypeClass(type):
     """Metaclass for nicely printing DataType classes."""
 
-    def __repr__(cls) -> str:
-        return cls.__name__
+    def __repr__(self) -> str:
+        return self.__name__
 
-    def _string_repr(cls) -> str:
-        return dtype_str_repr(cls)
+    def _string_repr(self) -> str:
+        return dtype_str_repr(self)
 
-    def base_type(cls) -> PolarsDataType:
-        return cls
+    def base_type(self) -> PolarsDataType:
+        return self
 
 
 class DataType(metaclass=DataTypeClass):
@@ -143,9 +143,7 @@ class DataType(metaclass=DataTypeClass):
     def __new__(cls, *args: Any, **kwargs: Any) -> PolarsDataType:  # type: ignore[misc]
         # this formulation allows for equivalent use of "pl.Type" and "pl.Type()", while
         # still respecting types that take initialisation params (eg: Duration/Datetime)
-        if args or kwargs:
-            return super().__new__(cls)
-        return cls
+        return super().__new__(cls) if args or kwargs else cls
 
     def __reduce__(self) -> Any:
         return (_custom_reconstruct, (type(self), object, None), self.__dict__)
@@ -702,9 +700,7 @@ DataTypeMappings = _DataTypeMappings()
 
 def _base_type(dtype: PolarsDataType) -> DataTypeClass:
     """Ensure return of the DataType base dtype/class."""
-    if isinstance(dtype, DataType):
-        return type(dtype)
-    return dtype
+    return type(dtype) if isinstance(dtype, DataType) else dtype
 
 
 def dtype_to_ctype(dtype: PolarsDataType) -> Any:
@@ -818,10 +814,11 @@ def dtype_to_arrow_type(dtype: PolarsDataType) -> pa.lib.DataType:
         if dtype == Datetime:
             dtype, tz = Datetime(dtype.tu), dtype.tz  # type: ignore[union-attr]
 
-        arrow_type = DataTypeMappings.DTYPE_TO_ARROW_TYPE[dtype]
-        if tz:
-            arrow_type = pa.timestamp(dtype.tu or "us", tz)  # type: ignore[union-attr]
-        return arrow_type
+        return (
+            pa.timestamp(dtype.tu or "us", tz)
+            if tz
+            else DataTypeMappings.DTYPE_TO_ARROW_TYPE[dtype]
+        )
     except KeyError:  # pragma: no cover
         raise ValueError(
             f"Cannot parse data type {dtype} into Arrow data type."

@@ -901,8 +901,8 @@ def test_lazy_ufunc_expr_not_first() -> None:
     expected = pl.DataFrame(
         [
             pl.Series("power", [2**1, 2**2, 2**3], dtype=pl.Float64),
-            pl.Series("divide_scalar", [2 / 1, 2 / 2, 2 / 3], dtype=pl.Float64),
-            pl.Series("divide_array", [2 / 1, 2 / 2, 2 / 3], dtype=pl.Float64),
+            pl.Series("divide_scalar", [2 / 1, 1, 2 / 3], dtype=pl.Float64),
+            pl.Series("divide_array", [2 / 1, 1, 2 / 3], dtype=pl.Float64),
         ]
     )
     assert_frame_equal(out.collect(), expected)

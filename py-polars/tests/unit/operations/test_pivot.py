@@ -210,7 +210,7 @@ def test_pivot_temporal_logical_types() -> None:
 
     df = pl.DataFrame(
         {
-            "idx": date_lst[-3:] + date_lst[0:5],
+            "idx": date_lst[-3:] + date_lst[:5],
             "foo": ["a"] * 3 + ["b"] * 5,
             "value": [0] * 8,
         }

@@ -165,11 +165,10 @@ def numpy_to_pyseries(
             name, values, nan_to_null if dtype in (np.float32, np.float64) else strict
         )
     elif len(values.shape) == 2:
-        pyseries_container = []
-        for row in range(values.shape[0]):
-            pyseries_container.append(
-                numpy_to_pyseries("", values[row, :], strict, nan_to_null)
-            )
+        pyseries_container = [
+            numpy_to_pyseries("", values[row, :], strict, nan_to_null)
+            for row in range(values.shape[0])
+        ]
         return PySeries.new_series_list(name, pyseries_container, False)
     else:
         return PySeries.new_object(name, values, strict)
@@ -276,17 +275,12 @@ def sequence_to_pyseries(
             return pli.DataFrame(values).to_struct(name)._s
         elif isinstance(value, range):
             values = [range_to_series("", v) for v in values]
-        else:
-            # for temporal dtypes:
-            # * if the values are integer, we take the physical branch.
-            # * if the values are python types, take the temporal branch.
-            # * if the values are ISO-8601 strings, init then convert via strptime.
-            if dtype in py_temporal_types and isinstance(value, int):
-                dtype = py_type_to_dtype(dtype)  # construct from integer
-            elif (
-                dtype in pl_temporal_types or type(dtype) in pl_temporal_types
-            ) and not isinstance(value, int):
-                python_dtype = dtype_to_py_type(dtype)  # type: ignore[arg-type]
+        elif dtype in py_temporal_types and isinstance(value, int):
+            dtype = py_type_to_dtype(dtype)  # construct from integer
+        elif (
+            dtype in pl_temporal_types or type(dtype) in pl_temporal_types
+        ) and not isinstance(value, int):
+            python_dtype = dtype_to_py_type(dtype)  # type: ignore[arg-type]
 
     # physical branch
     # flat data
@@ -374,38 +368,36 @@ def sequence_to_pyseries(
             # from the rust side. to reduce the likelihood of this happening we
             # infer the dtype of first 100 elements; if all() fails, we will hit
             # the PySeries.new_object
-            if not _PYARROW_AVAILABLE:
-                # check lists for consistent inner types
-                if isinstance(value, list):
-                    count = 0
-                    equal_to_inner = True
-                    for lst in values:
-                        for vl in lst:
-                            equal_to_inner = type(vl) == nested_dtype
-                            if not equal_to_inner or count > N_INFER_DEFAULT:
-                                break
-                            count += 1
-                    if equal_to_inner:
-                        dtype = py_type_to_dtype(nested_dtype)
-                        with suppress(BaseException):
-                            return PySeries.new_list(name, values, dtype)
-                # pass; give up and create via "new_object" if we get here
-            else:
+            if _PYARROW_AVAILABLE:
                 try:
-                    if is_polars_dtype(nested_dtype):
-                        nested_arrow_dtype = dtype_to_arrow_type(
+                    nested_arrow_dtype = (
+                        dtype_to_arrow_type(
                             nested_dtype  # type: ignore[arg-type]
                         )
-                    else:
-                        nested_arrow_dtype = py_type_to_arrow_type(
+                        if is_polars_dtype(nested_dtype)
+                        else py_type_to_arrow_type(
                             nested_dtype  # type: ignore[arg-type]
                         )
+                    )
                 except ValueError:  # pragma: no cover
                     return sequence_from_anyvalue_or_object(name, values)
                 with suppress(pa.lib.ArrowInvalid, pa.lib.ArrowTypeError):
                     arrow_values = pa.array(values, pa.large_list(nested_arrow_dtype))
                     return arrow_to_pyseries(name, arrow_values)
 
+            elif isinstance(value, list):
+                count = 0
+                equal_to_inner = True
+                for lst in values:
+                    for vl in lst:
+                        equal_to_inner = type(vl) == nested_dtype
+                        if not equal_to_inner or count > N_INFER_DEFAULT:
+                            break
+                        count += 1
+                if equal_to_inner:
+                    dtype = py_type_to_dtype(nested_dtype)
+                    with suppress(BaseException):
+                        return PySeries.new_list(name, values, dtype)
             # Convert mixed sequences like `[[12], "foo", 9]`
             return PySeries.new_object(name, values, strict)
 
@@ -535,20 +527,19 @@ def _handle_columns_arg(
     """Rename data according to columns argument."""
     if not columns:
         return data
-    else:
-        if not data:
-            return [pli.Series(c, None)._s for c in columns]
-        elif len(data) == len(columns):
-            if from_dict:
-                series_map = {s.name(): s for s in data}
-                if all((col in series_map) for col in columns):
-                    return [series_map[col] for col in columns]
+    if not data:
+        return [pli.Series(c, None)._s for c in columns]
+    elif len(data) == len(columns):
+        if from_dict:
+            series_map = {s.name(): s for s in data}
+            if all((col in series_map) for col in columns):
+                return [series_map[col] for col in columns]
 
-            for i, c in enumerate(columns):
-                data[i].rename(c)
-            return data
-        else:
-            raise ValueError("Dimensions of columns arg must match data dimensions.")
+        for i, c in enumerate(columns):
+            data[i].rename(c)
+        return data
+    else:
+        raise ValueError("Dimensions of columns arg must match data dimensions.")
 
 
 def _post_apply_columns(
@@ -619,9 +610,9 @@ def _unpack_schema(
         if not isinstance(col, str) and col[1] is not None
     }
     if schema_overrides:
-        column_dtypes.update(schema_overrides)
+        column_dtypes |= schema_overrides
         if schema and include_overrides_in_columns:
-            column_names = column_names + [
+            column_names += [
                 col for col in column_dtypes if col not in column_names
             ]
     for col, dtype in column_dtypes.items():
@@ -693,7 +684,7 @@ def dict_to_pydf(
 ) -> PyDataFrame:
     """Construct a PyDataFrame from a dictionary of sequences."""
     if isinstance(schema, dict) and data:
-        if not all((col in schema) for col in data):
+        if any(col not in schema for col in data):
             raise ValueError(
                 "The given column-schema names do not match the data dictionary"
             )
@@ -731,7 +722,7 @@ def dict_to_pydf(
                             lambda t: pli.Series(t[0], t[1])
                             if isinstance(t[1], np.ndarray)
                             else t[1],
-                            [(k, v) for k, v in data.items()],
+                            list(data.items()),
                         ),
                     )
                 )
@@ -820,7 +811,7 @@ def _sequence_to_pydf_dispatcher(
                 col: (py_type_to_dtype(tp, raise_unmatched=False) or Unknown)
                 for col, tp in dataclass_type_hints(first_element.__class__).items()
             }
-            schema_override.update(schema_overrides or {})
+            schema_override |= (schema_overrides or {})
 
         for col, tp in schema_override.items():
             if tp == Categorical:
@@ -1106,8 +1097,7 @@ def numpy_to_pydf(
             n_columns = shape[1]
             orient = "row"
 
-        # Infer orientation if columns argument is given
-        elif orient is None and schema is not None:
+        elif orient is None:
             if len(schema) == shape[0]:
                 orient = "col"
                 n_columns = shape[0]
@@ -1148,27 +1138,26 @@ def numpy_to_pydf(
                 nan_to_null=nan_to_null,
             )._s
         ]
+    elif orient == "row":
+        data_series = [
+            pli.Series(
+                name=column_names[i],
+                values=data[:, i],
+                dtype=schema_overrides.get(column_names[i]),
+                nan_to_null=nan_to_null,
+            )._s
+            for i in range(n_columns)
+        ]
     else:
-        if orient == "row":
-            data_series = [
-                pli.Series(
-                    name=column_names[i],
-                    values=data[:, i],
-                    dtype=schema_overrides.get(column_names[i]),
-                    nan_to_null=nan_to_null,
-                )._s
-                for i in range(n_columns)
-            ]
-        else:
-            data_series = [
-                pli.Series(
-                    name=column_names[i],
-                    values=data[i],
-                    dtype=schema_overrides.get(column_names[i]),
-                    nan_to_null=nan_to_null,
-                )._s
-                for i in range(n_columns)
-            ]
+        data_series = [
+            pli.Series(
+                name=column_names[i],
+                values=data[i],
+                dtype=schema_overrides.get(column_names[i]),
+                nan_to_null=nan_to_null,
+            )._s
+            for i in range(n_columns)
+        ]
 
     data_series = _handle_columns_arg(data_series, columns=column_names)
     return PyDataFrame(data_series)
@@ -1213,7 +1202,7 @@ def arrow_to_pydf(
         else:
             data_dict[name] = column
 
-    if len(data_dict) > 0:
+    if data_dict:
         tbl = pa.table(data_dict)
 
         # path for table without rows that keeps datatype
@@ -1232,14 +1221,14 @@ def arrow_to_pydf(
         pydf = pydf.rechunk()
 
     reset_order = False
-    if len(dictionary_cols) > 0:
+    if dictionary_cols:
         df = pli.wrap_df(pydf)
         df = df.with_columns(
             [pli.lit(s).alias(s.name) for s in dictionary_cols.values()]
         )
         reset_order = True
 
-    if len(struct_cols) > 0:
+    if struct_cols:
         df = pli.wrap_df(pydf)
         df = df.with_columns([pli.lit(s).alias(s.name) for s in struct_cols.values()])
         reset_order = True
@@ -1425,17 +1414,20 @@ def pandas_to_pydf(
 def coerce_arrow(array: pa.Array, rechunk: bool = True) -> pa.Array:
     import pyarrow.compute as pc
 
-    if hasattr(array, "num_chunks") and array.num_chunks > 1 and rechunk:
-        # small integer keys can often not be combined, so let's already cast
-        # to the uint32 used by polars
-        if pa.types.is_dictionary(array.type) and (
+    if (
+        hasattr(array, "num_chunks")
+        and array.num_chunks > 1
+        and rechunk
+        and pa.types.is_dictionary(array.type)
+        and (
             pa.types.is_int8(array.type.index_type)
             or pa.types.is_uint8(array.type.index_type)
             or pa.types.is_int16(array.type.index_type)
             or pa.types.is_uint16(array.type.index_type)
             or pa.types.is_int32(array.type.index_type)
-        ):
-            array = pc.cast(
-                array, pa.dictionary(pa.uint32(), pa.large_string())
-            ).combine_chunks()
+        )
+    ):
+        array = pc.cast(
+            array, pa.dictionary(pa.uint32(), pa.large_string())
+        ).combine_chunks()
     return array

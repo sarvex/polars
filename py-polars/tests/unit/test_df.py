@@ -313,7 +313,7 @@ def test_from_dict_with_scalars() -> None:
     df4 = pl.DataFrame(
         {
             "key": range(1, 4),
-            "misc": (x for x in [4, 5, 6]),
+            "misc": iter([4, 5, 6]),
             "other": map(float, [7, 8, 9]),
             "value": {0: "x", 1: "y", 2: "z"}.values(),
         },
@@ -1332,7 +1332,6 @@ def test_from_generator_or_iterable() -> None:
         for i in range(n):
             yield (str(i) if strkey else i), 1 * i, 2**i, 3**i
 
-    # iterable object
     class Rows:
         def __init__(self, n: int, strkey: bool = True):
             self._n = n
@@ -1352,11 +1351,7 @@ def test_from_generator_or_iterable() -> None:
     expected = pl.DataFrame(
         data=list(gen(4)), schema=["a", "b", "c", "d"], orient="row"
     )
-    for generated_frame in (
-        pl.DataFrame(data=gen(4), schema=["a", "b", "c", "d"]),
-        pl.DataFrame(data=Rows(4), schema=["a", "b", "c", "d"]),
-        pl.DataFrame(data=(x for x in Rows(4)), schema=["a", "b", "c", "d"]),
-    ):
+    for generated_frame in (pl.DataFrame(data=gen(4), schema=["a", "b", "c", "d"]), pl.DataFrame(data=Rows(4), schema=["a", "b", "c", "d"]), pl.DataFrame(data=iter(Rows(4)), schema=["a", "b", "c", "d"])):
         assert_frame_equal(expected, generated_frame)
         assert generated_frame.schema == {
             "a": pl.Utf8,
@@ -2240,12 +2235,12 @@ def test_add_string() -> None:
     expected = pl.DataFrame(
         {"a": ["hi hello", "there hello"], "b": ["hello hello", "world hello"]}
     )
-    assert_frame_equal((df + " hello"), expected)
+    assert_frame_equal(f"{df} hello", expected)
 
     expected = pl.DataFrame(
         {"a": ["hello hi", "hello there"], "b": ["hello hello", "hello world"]}
     )
-    assert_frame_equal(("hello " + df), expected)
+    assert_frame_equal(f"hello {df}", expected)
 
 
 def test_getitem() -> None:
@@ -3588,8 +3583,8 @@ def test_ufunc_expr_not_first() -> None:
     expected = pl.DataFrame(
         [
             pl.Series("power", [2**1, 2**2, 2**3], dtype=pl.Float64),
-            pl.Series("divide_scalar", [2 / 1, 2 / 2, 2 / 3], dtype=pl.Float64),
-            pl.Series("divide_array", [2 / 1, 2 / 2, 2 / 3], dtype=pl.Float64),
+            pl.Series("divide_scalar", [2 / 1, 1, 2 / 3], dtype=pl.Float64),
+            pl.Series("divide_array", [2 / 1, 1, 2 / 3], dtype=pl.Float64),
         ]
     )
     assert_frame_equal(out, expected)

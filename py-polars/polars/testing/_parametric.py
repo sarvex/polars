@@ -186,28 +186,27 @@ class column:
                 raise InvalidArgument(
                     f"No strategy (currently) available for {self.dtype} type"
                 )
-            else:
-                # given a custom strategy, but no explicit dtype. infer one
-                # from the first non-None value that the strategy produces.
-                with warnings.catch_warnings():
-                    # note: usually you should not call "example()" outside of an
-                    # interactive shell, hence the warning. however, here it is
-                    # reasonable to do so, so we catch and ignore it
-                    warnings.simplefilter("ignore", NonInteractiveExampleWarning)
-                    sample_value_iter = (
-                        self.strategy.example()  # type: ignore[union-attr]
-                        for _ in range(100)
+            # given a custom strategy, but no explicit dtype. infer one
+            # from the first non-None value that the strategy produces.
+            with warnings.catch_warnings():
+                # note: usually you should not call "example()" outside of an
+                # interactive shell, hence the warning. however, here it is
+                # reasonable to do so, so we catch and ignore it
+                warnings.simplefilter("ignore", NonInteractiveExampleWarning)
+                sample_value_iter = (
+                    self.strategy.example()  # type: ignore[union-attr]
+                    for _ in range(100)
+                )
+                try:
+                    sample_value_type = type(
+                        next(e for e in sample_value_iter if e is not None)
                     )
-                    try:
-                        sample_value_type = type(
-                            next(e for e in sample_value_iter if e is not None)
-                        )
-                    except StopIteration:
-                        raise InvalidArgument(
-                            "Unable to determine dtype for strategy"
-                        ) from None
-                if sample_value_type is not None:
-                    self.dtype = py_type_to_dtype(sample_value_type)
+                except StopIteration:
+                    raise InvalidArgument(
+                        "Unable to determine dtype for strategy"
+                    ) from None
+            if sample_value_type is not None:
+                self.dtype = py_type_to_dtype(sample_value_type)
 
 
 def columns(

@@ -719,9 +719,7 @@ class DataFrame:
         dtype_slice: Sequence[PolarsDataType] | None = None
         if dtypes is not None:
             if isinstance(dtypes, dict):
-                dtype_list = []
-                for k, v in dtypes.items():
-                    dtype_list.append((k, py_type_to_dtype(v)))
+                dtype_list = [(k, py_type_to_dtype(v)) for k, v in dtypes.items()]
             elif isinstance(dtypes, Sequence):
                 dtype_slice = dtypes
             else:
@@ -732,9 +730,7 @@ class DataFrame:
         if isinstance(columns, str):
             columns = [columns]
         if isinstance(file, str) and "*" in file:
-            dtypes_dict = None
-            if dtype_list is not None:
-                dtypes_dict = {name: dt for (name, dt) in dtype_list}
+            dtypes_dict = dict(dtype_list) if dtype_list is not None else None
             if dtype_slice is not None:
                 raise ValueError(
                     "cannot use glob patterns and unnamed dtypes as `dtypes` argument;"
@@ -1284,13 +1280,12 @@ class DataFrame:
             if not floordiv
             else df.with_columns([s.floor() for s in df if s.dtype() in FLOAT_DTYPES])
         )
-        if floordiv:
-            int_casts = [
-                pli.col(col).cast(tp)
-                for i, (col, tp) in enumerate(self.schema.items())
-                if tp in INTEGER_DTYPES and orig_dtypes[i] in INTEGER_DTYPES
-            ]
-            if int_casts:
+        if int_casts := [
+            pli.col(col).cast(tp)
+            for i, (col, tp) in enumerate(self.schema.items())
+            if tp in INTEGER_DTYPES and orig_dtypes[i] in INTEGER_DTYPES
+        ]:
+            if floordiv:
                 return df.with_columns(int_casts)
         return df
 
@@ -1384,10 +1379,7 @@ class DataFrame:
         return self.get_columns().__iter__()
 
     def _pos_idx(self, idx: int, dim: int) -> int:
-        if idx >= 0:
-            return idx
-        else:
-            return self.shape[dim] + idx
+        return idx if idx >= 0 else self.shape[dim] + idx
 
     def _pos_idxs(
         self, idxs: np.ndarray[Any, Any] | pli.Series, dim: int
@@ -1408,30 +1400,26 @@ class DataFrame:
                 Int64,
             }:
                 if idx_type == UInt32:
-                    if idxs.dtype in {Int64, UInt64}:
-                        if idxs.max() >= 2**32:  # type: ignore[operator]
-                            raise ValueError(
-                                "Index positions should be smaller than 2^32."
-                            )
-                    if idxs.dtype == Int64:
-                        if idxs.min() < -(2**32):  # type: ignore[operator]
-                            raise ValueError(
-                                "Index positions should be bigger than -2^32 + 1."
-                            )
-                if idxs.dtype in {Int8, Int16, Int32, Int64}:
-                    if idxs.min() < 0:  # type: ignore[operator]
-                        if idx_type == UInt32:
-                            if idxs.dtype in {Int8, Int16}:
-                                idxs = idxs.cast(Int32)
-                        else:
-                            if idxs.dtype in {Int8, Int16, Int32}:
-                                idxs = idxs.cast(Int64)
+                    if idxs.dtype in {Int64, UInt64} and idxs.max() >= 2**32:
+                        raise ValueError(
+                            "Index positions should be smaller than 2^32."
+                        )
+                    if idxs.dtype == Int64 and idxs.min() < -(2**32):
+                        raise ValueError(
+                            "Index positions should be bigger than -2^32 + 1."
+                        )
+                if idxs.dtype in {Int8, Int16, Int32, Int64} and idxs.min() < 0:
+                    if idx_type == UInt32:
+                        if idxs.dtype in {Int8, Int16}:
+                            idxs = idxs.cast(Int32)
+                    elif idxs.dtype in {Int8, Int16, Int32}:
+                        idxs = idxs.cast(Int64)
 
-                        idxs = pli.select(
-                            pli.when(pli.lit(idxs) < 0)
-                            .then(self.shape[dim] + pli.lit(idxs))
-                            .otherwise(pli.lit(idxs))
-                        ).to_series()
+                    idxs = pli.select(
+                        pli.when(pli.lit(idxs) < 0)
+                        .then(self.shape[dim] + pli.lit(idxs))
+                        .otherwise(pli.lit(idxs))
+                    ).to_series()
 
                 return idxs.cast(idx_type)
 
@@ -1452,9 +1440,8 @@ class DataFrame:
                     if idx_type == UInt32:
                         if idxs.dtype in (np.int8, np.int16):
                             idxs = idxs.astype(np.int32)
-                    else:
-                        if idxs.dtype in (np.int8, np.int16, np.int32):
-                            idxs = idxs.astype(np.int64)
+                    elif idxs.dtype in (np.int8, np.int16, np.int32):
+                        idxs = idxs.astype(np.int64)
 
                     # Update negative indexes to absolute indexes.
                     idxs = np.where(idxs < 0, self.shape[dim] + idxs, idxs)
@@ -1550,11 +1537,7 @@ class DataFrame:
                             f"Expected {self.width} values when selecting columns by"
                             f" boolean mask. Got {len(col_selection)}."
                         )
-                    series_list = []
-                    for i, val in enumerate(col_selection):
-                        if val:
-                            series_list.append(self.to_series(i))
-
+                    series_list = [self.to_series(i) for i, val in enumerate(col_selection) if val]
                     df = self.__class__(series_list)
                     return df[row_selection]
 
@@ -1585,17 +1568,15 @@ class DataFrame:
                 series = self.to_series(col_selection)
                 return series[row_selection]
 
-            if isinstance(col_selection, list):
-                # df[:, [1, 2]]
-                if is_int_sequence(col_selection):
-                    for i in col_selection:
-                        if (i >= 0 and i >= self.width) or (i < 0 and i < -self.width):
-                            raise ValueError(
-                                f'Column index "{col_selection}" is out of bounds.'
-                            )
-                    series_list = [self.to_series(i) for i in col_selection]
-                    df = self.__class__(series_list)
-                    return df[row_selection]
+            if isinstance(col_selection, list) and is_int_sequence(col_selection):
+                for i in col_selection:
+                    if (i >= 0 and i >= self.width) or (i < 0 and i < -self.width):
+                        raise ValueError(
+                            f'Column index "{col_selection}" is out of bounds.'
+                        )
+                series_list = [self.to_series(i) for i in col_selection]
+                df = self.__class__(series_list)
+                return df[row_selection]
 
             df = self.__getitem__(col_selection)
             return df.__getitem__(row_selection)
@@ -1667,7 +1648,6 @@ class DataFrame:
                 "Use 'DataFrame.with_columns'"
             )
 
-        # df[["C", "D"]]
         elif isinstance(key, list):
             # TODO: Use python sequence constructors
             value = np.array(value)
@@ -1679,13 +1659,9 @@ class DataFrame:
                     " names"
                 )
 
-            # todo! we can parallelize this by calling from_numpy
-            columns = []
-            for i, name in enumerate(key):
-                columns.append(pli.Series(name, value[:, i]))
+            columns = [pli.Series(name, value[:, i]) for i, name in enumerate(key)]
             self._df = self.with_columns(columns)._df
 
-        # df[a, b]
         elif isinstance(key, tuple):
             row_selection, col_selection = key
 
@@ -2049,11 +2025,12 @@ class DataFrame:
         dtype: object
 
         """
-        if use_pyarrow_extension_array:
-            if parse_version(pd.__version__) < parse_version("1.5"):
-                raise ModuleNotFoundError(
-                    f'"use_pyarrow_extension_array=True" requires Pandas 1.5.x or higher, found Pandas {pd.__version__}.'
-                )
+        if use_pyarrow_extension_array and parse_version(
+            pd.__version__
+        ) < parse_version("1.5"):
+            raise ModuleNotFoundError(
+                f'"use_pyarrow_extension_array=True" requires Pandas 1.5.x or higher, found Pandas {pd.__version__}.'
+            )
 
         record_batches = self._df.to_pandas()
         tbl = pa.Table.from_batches(record_batches)
@@ -3056,8 +3033,7 @@ class DataFrame:
                 n -= 1
 
             column_names = iter(column_names)
-            for _ in range(n):
-                names.append(next(column_names))
+            names.extend(next(column_names) for _ in range(n))
             df.columns = names
         return df
 
@@ -5033,11 +5009,10 @@ class DataFrame:
         """
         if not isinstance(columns, list):
             columns = columns.get_columns()
-        if in_place:
-            self._df.hstack_mut([s._s for s in columns])
-            return self
-        else:
+        if not in_place:
             return self._from_pydf(self._df.hstack([s._s for s in columns]))
+        self._df.hstack_mut([s._s for s in columns])
+        return self
 
     @deprecate_nonkeyword_arguments()
     def vstack(self, df: DataFrame, in_place: bool = False) -> Self:
@@ -5081,11 +5056,10 @@ class DataFrame:
         └─────┴─────┴─────┘
 
         """
-        if in_place:
-            self._df.vstack_mut(df._df)
-            return self
-        else:
+        if not in_place:
             return self._from_pydf(self._df.vstack(df._df))
+        self._df.vstack_mut(df._df)
+        return self
 
     def extend(self, other: Self) -> Self:
         """
@@ -5874,9 +5848,7 @@ class DataFrame:
             n_cols = step
             n_rows = math.ceil(height / n_cols)
 
-        n_fill = n_cols * n_rows - height
-
-        if n_fill:
+        if n_fill := n_cols * n_rows - height:
             if not isinstance(fill_values, list):
                 fill_values = [fill_values for _ in range(0, df.width)]
 
@@ -5901,7 +5873,7 @@ class DataFrame:
         zfill_val = math.floor(math.log10(n_cols)) + 1
         slices = [
             s.slice(slice_nbr * n_rows, n_rows).alias(
-                s.name + "_" + str(slice_nbr).zfill(zfill_val)
+                f"{s.name}_{str(slice_nbr).zfill(zfill_val)}"
             )
             for s in df
             for slice_nbr in range(0, n_cols)
@@ -7488,11 +7460,7 @@ class DataFrame:
 
         if index is not None:
             row = self._df.row_tuple(index)
-            if named:
-                return dict(zip(self.columns, row))
-            else:
-                return row
-
+            return dict(zip(self.columns, row)) if named else row
         elif by_predicate is not None:
             if not isinstance(by_predicate, pli.Expr):
                 raise TypeError(
@@ -7509,10 +7477,7 @@ class DataFrame:
                 raise NoRowsReturned(f"Predicate <{by_predicate!s}> returned no rows")
 
             row = rows[0]
-            if named:
-                return dict(zip(self.columns, row))
-            else:
-                return row
+            return dict(zip(self.columns, row)) if named else row
         else:
             raise ValueError("One of 'index' or 'by_predicate' must be set")
 
@@ -7569,12 +7534,11 @@ class DataFrame:
         iter_rows : Row iterator over frame data (does not materialise all rows).
 
         """
-        if named:
-            # Load these into the local namespace for a minor performance boost
-            dict_, zip_, columns = dict, zip, self.columns
-            return [dict_(zip_(columns, row)) for row in self._df.row_tuples()]
-        else:
+        if not named:
             return self._df.row_tuples()
+        # Load these into the local namespace for a minor performance boost
+        dict_, zip_, columns = dict, zip, self.columns
+        return [dict_(zip_(columns, row)) for row in self._df.row_tuples()]
 
     @overload
     def iter_rows(
@@ -7651,8 +7615,7 @@ class DataFrame:
             load_pyarrow_dicts = (
                 named
                 and _PYARROW_AVAILABLE
-                # note: 'ns' precision instantiates values as pandas types - avoid
-                and not any((getattr(tp, "tu", None) == "ns") for tp in self.dtypes)
+                and all(getattr(tp, "tu", None) != "ns" for tp in self.dtypes)
             )
             for offset in range(0, self.height, buffer_size):
                 zerocopy_slice = self.slice(offset, buffer_size)

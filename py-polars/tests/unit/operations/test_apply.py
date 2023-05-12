@@ -36,10 +36,7 @@ def test_apply_none() -> None:
 
     # check if we can return None
     def func(s: Sequence[pl.Series]) -> pl.Series | None:
-        if s[0][0] == 190:
-            return None
-        else:
-            return s[0]
+        return None if s[0][0] == 190 else s[0]
 
     out = (
         df.groupby("g", maintain_order=True).agg(

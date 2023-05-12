@@ -329,9 +329,7 @@ class LazyFrame:
         """
         dtype_list: list[tuple[str, PolarsDataType]] | None = None
         if dtypes is not None:
-            dtype_list = []
-            for k, v in dtypes.items():
-                dtype_list.append((k, py_type_to_dtype(v)))
+            dtype_list = [(k, py_type_to_dtype(v)) for k, v in dtypes.items()]
         processed_null_values = _process_null_values(null_values)
 
         self = cls.__new__(cls)
@@ -537,7 +535,7 @@ class LazyFrame:
         self = cls.__new__(cls)
         if isinstance(schema, dict):
             self._ldf = PyLazyFrame.scan_from_python_function_pl_schema(
-                [(name, dt) for name, dt in schema.items()], scan_fn, pyarrow
+                list(schema.items()), scan_fn, pyarrow
             )
         else:
             self._ldf = PyLazyFrame.scan_from_python_function_arrow_schema(
@@ -1042,7 +1040,7 @@ naive plan: (run LazyFrame.explain(optimized=True) to see the optimized plan)
 
         try:
             graph = subprocess.check_output(
-                ["dot", "-Nshape=box", "-T" + output_type], input=f"{dot}".encode()
+                ["dot", "-Nshape=box", f"-T{output_type}"], input=f"{dot}".encode()
             )
         except (ImportError, FileNotFoundError):
             raise ImportError("Graphviz dot binary should be on your PATH") from None
