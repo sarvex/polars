@@ -1144,7 +1144,6 @@ impl SQLContext {
                 ..
             } => {
                 if let Some(alias) = alias {
-                    let table_name = alias.name.value.clone();
                     let column_names: Vec<Option<PlSmallStr>> = alias
                         .columns
                         .iter()
@@ -1187,11 +1186,13 @@ impl SQLContext {
                         .collect();
 
                     let lf = DataFrame::new(column_series)?.lazy();
+
                     if *with_offset {
-                        // TODO: support 'WITH ORDINALITY' modifier.
+                        // TODO: support 'WITH ORDINALITY|OFFSET' modifier.
                         //  (note that 'WITH OFFSET' is BigQuery-specific syntax, not PostgreSQL)
-                        polars_bail!(SQLInterface: "UNNEST tables do not (yet) support WITH OFFSET/ORDINALITY");
+                        polars_bail!(SQLInterface: "UNNEST tables do not (yet) support WITH ORDINALITY|OFFSET");
                     }
+                    let table_name = alias.name.value.clone();
                     self.table_map.insert(table_name.clone(), lf.clone());
                     Ok((table_name.clone(), lf))
                 } else {
@@ -1474,7 +1475,10 @@ impl SQLContext {
                 .replace('%', ".*")
                 .replace('_', ".");
 
-            modifiers.ilike = Some(regex::Regex::new(format!("^(?is){}$", rx).as_str()).unwrap());
+            modifiers.ilike = Some(
+                polars_utils::regex_cache::compile_regex(format!("^(?is){}$", rx).as_str())
+                    .unwrap(),
+            );
         }
 
         // SELECT * RENAME
@@ -1571,10 +1575,10 @@ fn expand_exprs(expr: Expr, schema: &SchemaRef) -> Vec<Expr> {
             .map(|name| col(name.clone()))
             .collect::<Vec<_>>(),
         Expr::Column(nm) if is_regex_colname(nm.as_str()) => {
-            let rx = regex::Regex::new(&nm).unwrap();
+            let re = polars_utils::regex_cache::compile_regex(&nm).unwrap();
             schema
                 .iter_names()
-                .filter(|name| rx.is_match(name))
+                .filter(|name| re.is_match(name))
                 .map(|name| col(name.clone()))
                 .collect::<Vec<_>>()
         },
@@ -1688,7 +1692,7 @@ impl ExprSqlProjectionHeightBehavior {
 
                 Literal(v) => !v.is_scalar(),
 
-                Explode(_) | Filter { .. } | Gather { .. } | Slice { .. } => true,
+                Explode { .. } | Filter { .. } | Gather { .. } | Slice { .. } => true,
 
                 Agg { .. } | Len => true,
 

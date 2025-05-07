@@ -23,8 +23,6 @@ mod pages;
 mod primitive;
 mod row_group;
 mod schema;
-#[cfg(feature = "async")]
-mod sink;
 mod utils;
 
 use arrow::array::*;
@@ -98,9 +96,7 @@ pub use file::FileWriter;
 pub use pages::{Nested, array_to_columns, arrays_to_columns};
 use polars_error::{PolarsResult, polars_bail};
 pub use row_group::{RowGroupIterator, row_group_iter};
-pub use schema::to_parquet_type;
-#[cfg(feature = "async")]
-pub use sink::FileSink;
+pub use schema::{schema_to_metadata_key, to_parquet_type};
 
 use self::pages::{FixedSizeListNested, PrimitiveNested, StructNested};
 use crate::write::dictionary::encode_as_dictionary_optional;

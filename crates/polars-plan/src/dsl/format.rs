@@ -39,20 +39,17 @@ impl fmt::Debug for Expr {
             },
             Nth(i) => write!(f, "nth({i})"),
             Len => write!(f, "len()"),
-            Explode(expr) => write!(f, "{expr:?}.explode()"),
+            Explode {
+                input: expr,
+                skip_empty: false,
+            } => write!(f, "{expr:?}.explode()"),
+            Explode {
+                input: expr,
+                skip_empty: true,
+            } => write!(f, "{expr:?}.explode(skip_empty)"),
             Alias(expr, name) => write!(f, "{expr:?}.alias(\"{name}\")"),
             Column(name) => write!(f, "col(\"{name}\")"),
-            Literal(v) => {
-                match v {
-                    LiteralValue::String(v) => {
-                        // dot breaks with debug fmt due to \"
-                        write!(f, "String({v})")
-                    },
-                    _ => {
-                        write!(f, "{v:?}")
-                    },
-                }
-            },
+            Literal(v) => write!(f, "{v:?}"),
             BinaryExpr { left, op, right } => write!(f, "[({left:?}) {op:?} ({right:?})]"),
             Sort { expr, options } => {
                 if options.descending {
@@ -130,7 +127,7 @@ impl fmt::Debug for Expr {
                 dtype,
                 options,
             } => {
-                if options.strict() {
+                if options.is_strict() {
                     write!(f, "{expr:?}.strict_cast({dtype:?})")
                 } else {
                     write!(f, "{expr:?}.cast({dtype:?})")

@@ -16,9 +16,8 @@ polars-json = { workspace = true, optional = true }
 polars-schema = { workspace = true }
 polars-utils = { workspace = true }
 
-ahash = { workspace = true }
 aho-corasick = { workspace = true, optional = true }
-argminmax = { version = "0.6.2", default-features = false, features = ["float"] }
+argminmax = { version = "0.6.3", default-features = false, features = ["float"] }
 arrow = { workspace = true }
 base64 = { workspace = true, optional = true }
 bytemuck = { workspace = true }
@@ -28,6 +27,7 @@ either = { workspace = true }
 hashbrown = { workspace = true }
 hex = { workspace = true, optional = true }
 indexmap = { workspace = true }
+libm = { workspace = true }
 memchr = { workspace = true }
 num-traits = { workspace = true }
 rand = { workspace = true, optional = true, features = ["small_rng", "std"] }
@@ -87,7 +87,7 @@ timezones = ["chrono", "chrono-tz", "polars-core/temporal", "polars-core/timezon
 random = ["rand", "rand_distr"]
 rank = ["rand"]
 find_many = ["aho-corasick"]
-serde = ["dep:serde", "polars-core/serde", "polars-utils/serde", "polars-schema/serde"]
+serde = ["dep:serde", "polars-core/serde", "polars-utils/serde", "polars-schema/serde", "polars-compute/serde"]
 
 # extra utilities for BinaryChunked
 binary_encoding = ["base64", "hex"]

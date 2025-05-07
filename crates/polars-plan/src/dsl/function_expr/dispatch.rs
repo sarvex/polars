@@ -13,8 +13,19 @@ pub(super) fn approx_n_unique(s: &Column) -> PolarsResult<Column> {
 }
 
 #[cfg(feature = "diff")]
-pub(super) fn diff(s: &Column, n: i64, null_behavior: NullBehavior) -> PolarsResult<Column> {
-    polars_ops::prelude::diff(s.as_materialized_series(), n, null_behavior).map(Column::from)
+pub(super) fn diff(s: &[Column], null_behavior: NullBehavior) -> PolarsResult<Column> {
+    let s1 = s[0].as_materialized_series();
+    let n = &s[1];
+
+    polars_ensure!(
+        n.len() == 1,
+        ComputeError: "n must be a single value."
+    );
+    let n = n.strict_cast(&DataType::Int64)?;
+    match n.i64()?.get(0) {
+        Some(n) => polars_ops::prelude::diff(s1, n, null_behavior).map(Column::from),
+        None => polars_bail!(ComputeError: "'n' can not be None for diff"),
+    }
 }
 
 #[cfg(feature = "pct_change")]
@@ -48,7 +59,7 @@ pub(super) fn set_sorted_flag(s: &Column, sorted: IsSorted) -> PolarsResult<Colu
 #[cfg(feature = "timezones")]
 pub(super) fn replace_time_zone(
     s: &[Column],
-    time_zone: Option<&str>,
+    time_zone: Option<&TimeZone>,
     non_existent: NonExistent,
 ) -> PolarsResult<Column> {
     let s1 = &s[0];
@@ -87,14 +98,6 @@ pub(super) fn repeat_by(s: &[Column]) -> PolarsResult<Column> {
     let by = by.cast(&IDX_DTYPE)?;
     polars_ops::chunked_array::repeat_by(s.as_materialized_series(), by.idx()?)
         .map(|ok| ok.into_column())
-}
-
-pub(super) fn backward_fill(s: &Column, limit: FillNullLimit) -> PolarsResult<Column> {
-    s.fill_null(FillNullStrategy::Backward(limit))
-}
-
-pub(super) fn forward_fill(s: &Column, limit: FillNullLimit) -> PolarsResult<Column> {
-    s.fill_null(FillNullStrategy::Forward(limit))
 }
 
 pub(super) fn max_horizontal(s: &mut [Column]) -> PolarsResult<Option<Column>> {
@@ -184,12 +187,8 @@ pub(super) fn hist(
 
 #[cfg(feature = "replace")]
 pub(super) fn replace(s: &[Column]) -> PolarsResult<Column> {
-    polars_ops::series::replace(
-        s[0].as_materialized_series(),
-        s[1].as_materialized_series(),
-        s[2].as_materialized_series(),
-    )
-    .map(Column::from)
+    polars_ops::series::replace(s[0].as_materialized_series(), s[1].list()?, s[2].list()?)
+        .map(Column::from)
 }
 
 #[cfg(feature = "replace")]
@@ -197,15 +196,15 @@ pub(super) fn replace_strict(s: &[Column], return_dtype: Option<DataType>) -> Po
     match s.get(3) {
         Some(default) => polars_ops::series::replace_or_default(
             s[0].as_materialized_series(),
-            s[1].as_materialized_series(),
-            s[2].as_materialized_series(),
+            s[1].list()?,
+            s[2].list()?,
             default.as_materialized_series(),
             return_dtype,
         ),
         None => polars_ops::series::replace_strict(
             s[0].as_materialized_series(),
-            s[1].as_materialized_series(),
-            s[2].as_materialized_series(),
+            s[1].list()?,
+            s[2].list()?,
             return_dtype,
         ),
     }
@@ -220,8 +219,7 @@ pub(super) fn fill_null_with_strategy(
 }
 
 pub(super) fn gather_every(s: &Column, n: usize, offset: usize) -> PolarsResult<Column> {
-    polars_ensure!(n > 0, InvalidOperation: "gather_every(n): n should be positive");
-    Ok(s.gather_every(n, offset))
+    s.gather_every(n, offset)
 }
 
 #[cfg(feature = "reinterpret")]

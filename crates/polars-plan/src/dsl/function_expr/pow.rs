@@ -13,6 +13,15 @@ pub enum PowFunction {
     Cbrt,
 }
 
+impl PowFunction {
+    pub fn function_options(&self) -> FunctionOptions {
+        use PowFunction as P;
+        match self {
+            P::Generic | P::Sqrt | P::Cbrt => FunctionOptions::elementwise(),
+        }
+    }
+}
+
 impl Display for PowFunction {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         use self::*;
@@ -21,6 +30,12 @@ impl Display for PowFunction {
             PowFunction::Sqrt => write!(f, "sqrt"),
             PowFunction::Cbrt => write!(f, "cbrt"),
         }
+    }
+}
+
+impl From<PowFunction> for FunctionExpr {
+    fn from(value: PowFunction) -> Self {
+        Self::Pow(value)
     }
 }
 
@@ -59,7 +74,7 @@ where
     T::Native: Pow<T::Native, Output = T::Native> + ToPrimitive + Float,
     ChunkedArray<T>: IntoColumn,
 {
-    let dtype = T::get_dtype();
+    let dtype = T::get_static_dtype();
 
     if exponent.len() == 1 {
         let Some(exponent_value) = exponent.get(0) else {
@@ -102,7 +117,7 @@ where
     T::Native: Pow<F::Native, Output = T::Native> + ToPrimitive,
     ChunkedArray<T>: IntoColumn,
 {
-    let dtype = T::get_dtype();
+    let dtype = T::get_static_dtype();
 
     if exponent.len() == 1 {
         let Some(exponent_value) = exponent.get(0) else {

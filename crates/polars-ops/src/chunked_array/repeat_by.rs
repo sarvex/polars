@@ -11,7 +11,7 @@ type LargeListArray = ListArray<i64>;
 fn check_lengths(length_srs: usize, length_by: usize) -> PolarsResult<()> {
     polars_ensure!(
        (length_srs == length_by) | (length_by == 1) | (length_srs == 1),
-       ComputeError: "repeat_by argument and the Series should have equal length, or at least one of them should have length 1. Series length {}, by length {}",
+       ShapeMismatch: "repeat_by argument and the Series should have equal length, or at least one of them should have length 1. Series length {}, by length {}",
        length_srs, length_by
     );
     Ok(())
@@ -43,7 +43,7 @@ where
                 unsafe {
                     LargeListArray::from_iter_primitive_trusted_len(
                         iter,
-                        T::get_dtype().to_arrow(CompatLevel::newest()),
+                        T::get_static_dtype().to_arrow(CompatLevel::newest()),
                     )
                 }
             }))

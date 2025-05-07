@@ -2,7 +2,7 @@ use std::any::Any;
 use std::borrow::Cow;
 
 use self::compare_inner::TotalOrdInner;
-use super::{BitRepr, StatisticsFlags};
+use super::{BitRepr, StatisticsFlags, *};
 use crate::chunked_array::cast::CastOptions;
 use crate::chunked_array::object::PolarsObjectSafe;
 use crate::chunked_array::ops::compare_inner::{IntoTotalEqInner, TotalEqInner};
@@ -58,14 +58,18 @@ where
         invalid_operation_panic!(into_total_ord_inner, self)
     }
 
-    fn vec_hash(&self, random_state: PlRandomState, buf: &mut Vec<u64>) -> PolarsResult<()> {
+    fn vec_hash(
+        &self,
+        random_state: PlSeedableRandomStateQuality,
+        buf: &mut Vec<u64>,
+    ) -> PolarsResult<()> {
         self.0.vec_hash(random_state, buf)?;
         Ok(())
     }
 
     fn vec_hash_combine(
         &self,
-        build_hasher: PlRandomState,
+        build_hasher: PlSeedableRandomStateQuality,
         hashes: &mut [u64],
     ) -> PolarsResult<()> {
         self.0.vec_hash_combine(build_hasher, hashes)?;
@@ -233,6 +237,10 @@ where
         index: usize,
     ) -> Option<&dyn PolarsObjectSafe> {
         ObjectChunked::<T>::get_object_chunked_unchecked(&self.0, chunk, index)
+    }
+
+    fn find_validity_mismatch(&self, other: &Series, idxs: &mut Vec<IdxSize>) {
+        self.0.find_validity_mismatch(other, idxs)
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -233,3 +233,122 @@ def test_merge_time() -> None:
     s = pl.Series("a", [time(0, 0)], pl.Time)
     df = pl.DataFrame([s])
     assert df.merge_sorted(df, "a").get_column("a").dtype == pl.Time()
+
+
+@pytest.mark.may_fail_auto_streaming
+def test_merge_sorted_invalid_categorical_local() -> None:
+    df1 = pl.DataFrame({"a": pl.Series(["a", "b", "c"], dtype=pl.Categorical)})
+    df2 = pl.DataFrame({"a": pl.Series(["a", "b", "d"], dtype=pl.Categorical)})
+
+    with pytest.raises(
+        ComputeError, match="can only merge-sort categoricals with the same categories"
+    ):
+        df1.merge_sorted(df2, key="a")
+
+
+@pytest.mark.may_fail_auto_streaming
+def test_merge_sorted_categorical_global_physical() -> None:
+    with pl.StringCache():
+        df1 = pl.DataFrame(
+            {"a": pl.Series(["e", "a", "f"], dtype=pl.Categorical("physical"))}
+        )
+        df2 = pl.DataFrame(
+            {"a": pl.Series(["a", "c", "d"], dtype=pl.Categorical("physical"))}
+        )
+        expected = pl.DataFrame(
+            {
+                "a": pl.Series(
+                    (["e", "a", "a", "f", "c", "d"]),
+                    dtype=pl.Categorical("physical"),
+                )
+            }
+        )
+    result = df1.merge_sorted(df2, key="a")
+    assert_frame_equal(result, expected)
+
+
+@pytest.mark.may_fail_auto_streaming
+def test_merge_sorted_categorical_global_lexical() -> None:
+    with pl.StringCache():
+        df1 = pl.DataFrame(
+            {"a": pl.Series(["a", "e", "f"], dtype=pl.Categorical("lexical"))}
+        )
+        df2 = pl.DataFrame(
+            {"a": pl.Series(["a", "c", "d"], dtype=pl.Categorical("lexical"))}
+        )
+        expected = pl.DataFrame(
+            {
+                "a": pl.Series(
+                    (["a", "a", "c", "d", "e", "f"]),
+                    dtype=pl.Categorical("lexical"),
+                )
+            }
+        )
+    result = df1.merge_sorted(df2, key="a")
+    assert_frame_equal(result, expected)
+
+
+def test_merge_sorted_categorical_21952() -> None:
+    with pl.StringCache():
+        df1 = pl.DataFrame({"a": ["a", "b", "c"]}).cast(pl.Categorical("lexical"))
+        df2 = pl.DataFrame({"a": ["a", "b", "d"]}).cast(pl.Categorical("lexical"))
+        df = df1.merge_sorted(df2, key="a")
+        assert repr(df) == (
+            "shape: (6, 1)\n"
+            "┌─────┐\n"
+            "│ a   │\n"
+            "│ --- │\n"
+            "│ cat │\n"
+            "╞═════╡\n"
+            "│ a   │\n"
+            "│ a   │\n"
+            "│ b   │\n"
+            "│ b   │\n"
+            "│ c   │\n"
+            "│ d   │\n"
+            "└─────┘"
+        )
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_merge_sorted_chain_streaming_21789_a(streaming: bool) -> None:
+    lf0 = pl.LazyFrame({"foo": ["a1", "a2"], "n": [10, 20]})
+    lf1 = pl.LazyFrame({"foo": ["b1", "b2"], "n": [11, 21]})
+    lf2 = pl.LazyFrame({"foo": ["c1", "c2"], "n": [12, 22]})
+
+    pq = lf0.merge_sorted(lf1, key="n").merge_sorted(lf2, key="n")
+
+    expected = pl.DataFrame(
+        {
+            "foo": ["a1", "b1", "c1", "a2", "b2", "c2"],
+            "n": [10, 11, 12, 20, 21, 22],
+        }
+    )
+
+    out = pq.collect(engine="streaming" if streaming else "in-memory")
+
+    assert_frame_equal(out, expected)
+
+
+# The following expression triggers [Blocked, Ready] [Ready] in merge_sorted.
+@pytest.mark.parametrize("streaming", [False, True])
+def test_merge_sorted_chain_streaming_21789_b(streaming: bool) -> None:
+    lf0 = pl.LazyFrame({"foo": ["a1", "a2"], "n": [10, 20]})
+    lf1 = pl.LazyFrame({"foo": ["b1", "b2"], "n": [11, 21]})
+    lf2 = pl.LazyFrame({"foo": ["c1", "c2"], "n": [12, 22]})
+    lf3 = pl.LazyFrame({"foo": ["d1", "d2"], "n": [13, 23]})
+
+    lf01 = lf0.merge_sorted(lf1, key="n").top_k(3, by="n").sort(by="n")
+    lf23 = lf2.merge_sorted(lf3, key="n")
+    pq = lf01.merge_sorted(lf23, key="n").bottom_k(6, by="n").sort(by="n")
+
+    expected = pl.DataFrame(
+        {
+            "foo": ["b1", "c1", "d1", "a2", "b2", "c2"],
+            "n": [11, 12, 13, 20, 21, 22],
+        }
+    )
+
+    out = pq.collect(engine="streaming" if streaming else "in-memory")
+
+    assert_frame_equal(out, expected)

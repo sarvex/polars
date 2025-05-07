@@ -32,10 +32,7 @@ impl FunctionExpr {
             // Other expressions
             Boolean(func) => func.get_field(mapper),
             #[cfg(feature = "business")]
-            Business(func) => match func {
-                BusinessFunction::BusinessDayCount { .. } => mapper.with_dtype(DataType::Int32),
-                BusinessFunction::AddBusinessDay { .. } => mapper.with_same_dtype(),
-            },
+            Business(func) => func.get_field(mapper),
             #[cfg(feature = "abs")]
             Abs => mapper.with_same_dtype(),
             Negate => mapper.with_same_dtype(),
@@ -72,7 +69,7 @@ impl FunctionExpr {
                     #[cfg(feature = "cov")]
                     CorrCov {..} => mapper.map_to_float_dtype(),
                     #[cfg(feature = "moment")]
-                    Skew(..) => mapper.map_to_float_dtype(),
+                    Skew(..) | Kurtosis(..) => mapper.map_to_float_dtype(),
                 }
             },
             #[cfg(feature = "rolling_window_by")]
@@ -170,7 +167,7 @@ impl FunctionExpr {
                 }
             },
             #[cfg(feature = "diff")]
-            Diff(_, _) => mapper.map_dtype(|dt| match dt {
+            Diff(_) => mapper.map_dtype(|dt| match dt {
                 #[cfg(feature = "dtype-datetime")]
                 DataType::Datetime(tu, _) => DataType::Duration(*tu),
                 #[cfg(feature = "dtype-date")]
@@ -325,12 +322,11 @@ impl FunctionExpr {
             SetSortedFlag(_) => mapper.with_same_dtype(),
             #[cfg(feature = "ffi_plugin")]
             FfiPlugin {
+                flags: _,
                 lib,
                 symbol,
                 kwargs,
             } => unsafe { plugin::plugin_field(fields, lib, symbol.as_ref(), kwargs) },
-            BackwardFill { .. } => mapper.with_same_dtype(),
-            ForwardFill { .. } => mapper.with_same_dtype(),
             MaxHorizontal => mapper.map_to_supertype(),
             MinHorizontal => mapper.map_to_supertype(),
             SumHorizontal { .. } => {
@@ -629,9 +625,13 @@ impl<'a> FieldsMapper<'a> {
             None => {
                 let new = &self.fields[2];
                 let default = self.fields.get(3);
+
+                // @HACK: Related to implicit implode see #22149.
+                let inner_dtype = new.dtype().inner_dtype().unwrap_or(new.dtype());
+
                 match default {
-                    Some(default) => try_get_supertype(default.dtype(), new.dtype())?,
-                    None => new.dtype().clone(),
+                    Some(default) => try_get_supertype(default.dtype(), inner_dtype)?,
+                    None => inner_dtype.clone(),
                 }
             },
         };

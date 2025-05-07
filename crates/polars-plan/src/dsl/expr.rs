@@ -118,7 +118,10 @@ pub enum Expr {
         function: FunctionExpr,
         options: FunctionOptions,
     },
-    Explode(Arc<Expr>),
+    Explode {
+        input: Arc<Expr>,
+        skip_empty: bool,
+    },
     Filter {
         input: Arc<Expr>,
         by: Arc<Expr>,
@@ -187,7 +190,9 @@ impl<T: PartialEq + Clone> PartialEq for LazySerde<T> {
         use LazySerde as L;
         match (self, other) {
             (L::Deserialized(a), L::Deserialized(b)) => a == b,
-            (L::Bytes(a), L::Bytes(b)) => a.as_ptr() == b.as_ptr() && a.len() == b.len(),
+            (L::Bytes(a), L::Bytes(b)) => {
+                std::ptr::eq(a.as_ptr(), b.as_ptr()) && a.len() == b.len()
+            },
             _ => false,
         }
     }
@@ -294,7 +299,10 @@ impl Hash for Expr {
                 sort_options.hash(state);
             },
             Expr::Agg(input) => input.hash(state),
-            Expr::Explode(input) => input.hash(state),
+            Expr::Explode { input, skip_empty } => {
+                skip_empty.hash(state);
+                input.hash(state)
+            },
             Expr::Window {
                 function,
                 partition_by,
@@ -340,13 +348,12 @@ impl Eq for Expr {}
 
 impl Default for Expr {
     fn default() -> Self {
-        Expr::Literal(LiteralValue::Null)
+        Expr::Literal(LiteralValue::Scalar(Scalar::default()))
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-
 pub enum Excluded {
     Name(PlSmallStr),
     Dtype(DataType),
@@ -373,34 +380,8 @@ impl Expr {
 
     /// Extract a constant usize from an expression.
     pub fn extract_usize(&self) -> PolarsResult<usize> {
-        macro_rules! cast_usize {
-            ($v:ident) => {
-                usize::try_from(*$v).map_err(
-                    |_| polars_err!(InvalidOperation: "cannot convert value {} to usize", $v)
-                )
-            }
-        }
         match self {
-            Expr::Literal(n) => Ok(match n {
-                LiteralValue::Int(v) => cast_usize!(v)?,
-                #[cfg(feature = "dtype-u8")]
-                LiteralValue::UInt8(v) => *v as usize,
-                #[cfg(feature = "dtype-u16")]
-                LiteralValue::UInt16(v) => *v as usize,
-                LiteralValue::UInt32(v) => cast_usize!(v)?,
-                LiteralValue::UInt64(v) => cast_usize!(v)?,
-                #[cfg(feature = "dtype-i8")]
-                LiteralValue::Int8(v) => cast_usize!(v)?,
-                #[cfg(feature = "dtype-i16")]
-                LiteralValue::Int16(v) => cast_usize!(v)?,
-                LiteralValue::Int32(v) => cast_usize!(v)?,
-                LiteralValue::Int64(v) => cast_usize!(v)?,
-                #[cfg(feature = "dtype-i128")]
-                LiteralValue::Int128(v) => cast_usize!(v)?,
-                _ => {
-                    polars_bail!(InvalidOperation: "expression must be constant literal to extract integer")
-                },
-            }),
+            Expr::Literal(n) => n.extract_usize(),
             Expr::Cast { expr, dtype, .. } => {
                 // lit(x, dtype=...) are Cast expressions. We verify the inner expression is literal.
                 if dtype.is_integer() {
@@ -412,6 +393,59 @@ impl Expr {
             _ => {
                 polars_bail!(InvalidOperation: "expression must be constant literal to extract integer")
             },
+        }
+    }
+
+    #[inline]
+    pub fn map_unary(self, function: impl Into<FunctionExpr>) -> Self {
+        Expr::n_ary(function, vec![self])
+    }
+    #[inline]
+    pub fn map_binary(self, function: impl Into<FunctionExpr>, rhs: Self) -> Self {
+        Expr::n_ary(function, vec![self, rhs])
+    }
+
+    #[inline]
+    pub fn map_ternary(self, function: impl Into<FunctionExpr>, arg1: Expr, arg2: Expr) -> Expr {
+        Expr::n_ary(function, vec![self, arg1, arg2])
+    }
+
+    #[inline]
+    pub fn try_map_n_ary(
+        self,
+        function: impl Into<FunctionExpr>,
+        exprs: impl IntoIterator<Item = PolarsResult<Expr>>,
+    ) -> PolarsResult<Expr> {
+        let exprs = exprs.into_iter();
+        let mut input = Vec::with_capacity(exprs.size_hint().0 + 1);
+        input.push(self);
+        for e in exprs {
+            input.push(e?);
+        }
+        Ok(Expr::n_ary(function, input))
+    }
+
+    #[inline]
+    pub fn map_n_ary(
+        self,
+        function: impl Into<FunctionExpr>,
+        exprs: impl IntoIterator<Item = Expr>,
+    ) -> Expr {
+        let exprs = exprs.into_iter();
+        let mut input = Vec::with_capacity(exprs.size_hint().0 + 1);
+        input.push(self);
+        input.extend(exprs);
+        Expr::n_ary(function, input)
+    }
+
+    #[inline]
+    pub fn n_ary(function: impl Into<FunctionExpr>, input: Vec<Expr>) -> Expr {
+        let function = function.into();
+        let options = function.function_options();
+        Expr::Function {
+            input,
+            function,
+            options,
         }
     }
 }

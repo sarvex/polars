@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use either::Either;
 use polars::io::{HiveOptions, RowIndex};
@@ -11,6 +11,7 @@ use polars_parquet::arrow::write::StatisticsOptions;
 use polars_plan::dsl::ScanSources;
 use polars_plan::plans::{AExpr, IR};
 use polars_utils::arena::{Arena, Node};
+use polars_utils::python_function::PythonObject;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
 use pyo3::types::{PyDict, PyList};
@@ -458,6 +459,26 @@ impl PyLazyFrame {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (
+        dataset_object
+    ))]
+    fn new_from_dataset_object(dataset_object: PyObject) -> PyResult<Self> {
+        use crate::dataset::dataset_provider_funcs;
+
+        polars_plan::dsl::DATASET_PROVIDER_VTABLE.get_or_init(|| PythonDatasetProviderVTable {
+            reader_name: dataset_provider_funcs::reader_name,
+            schema: dataset_provider_funcs::schema,
+            to_dataset_scan: dataset_provider_funcs::to_dataset_scan,
+        });
+
+        let lf =
+            LazyFrame::from(DslBuilder::scan_python_dataset(PythonObject(dataset_object)).build())
+                .into();
+
+        Ok(lf)
+    }
+
+    #[staticmethod]
     fn scan_from_python_function_arrow_schema(
         schema: &Bound<'_, PyList>,
         scan_fn: PyObject,
@@ -529,6 +550,11 @@ impl PyLazyFrame {
 
     fn to_dot(&self, py: Python, optimized: bool) -> PyResult<String> {
         py.enter_polars(|| self.ldf.to_dot(optimized))
+    }
+
+    #[cfg(feature = "new_streaming")]
+    fn to_dot_streaming_phys(&self, py: Python, optimized: bool) -> PyResult<String> {
+        py.enter_polars(|| self.ldf.to_dot_streaming_phys(optimized))
     }
 
     fn optimization_toggle(
@@ -691,33 +717,40 @@ impl PyLazyFrame {
     }
 
     #[pyo3(signature = (engine, lambda))]
-    fn collect_with_callback(&self, engine: Wrap<Engine>, lambda: PyObject) {
-        let ldf = self.ldf.clone();
+    fn collect_with_callback(
+        &self,
+        py: Python,
+        engine: Wrap<Engine>,
+        lambda: PyObject,
+    ) -> PyResult<()> {
+        py.enter_polars_ok(|| {
+            let ldf = self.ldf.clone();
 
-        polars_core::POOL.spawn(move || {
-            let result = ldf
-                .collect_with_engine(engine.0)
-                .map(PyDataFrame::new)
-                .map_err(PyPolarsErr::from);
+            polars_core::POOL.spawn(move || {
+                let result = ldf
+                    .collect_with_engine(engine.0)
+                    .map(PyDataFrame::new)
+                    .map_err(PyPolarsErr::from);
 
-            Python::with_gil(|py| match result {
-                Ok(df) => {
-                    lambda.call1(py, (df,)).map_err(|err| err.restore(py)).ok();
-                },
-                Err(err) => {
-                    lambda
-                        .call1(py, (PyErr::from(err),))
-                        .map_err(|err| err.restore(py))
-                        .ok();
-                },
+                Python::with_gil(|py| match result {
+                    Ok(df) => {
+                        lambda.call1(py, (df,)).map_err(|err| err.restore(py)).ok();
+                    },
+                    Err(err) => {
+                        lambda
+                            .call1(py, (PyErr::from(err),))
+                            .map_err(|err| err.restore(py))
+                            .ok();
+                    },
+                });
             });
-        });
+        })
     }
 
     #[cfg(all(feature = "streaming", feature = "parquet"))]
     #[pyo3(signature = (
         target, compression, compression_level, statistics, row_group_size, data_page_size,
-        cloud_options, credential_provider, retries, sink_options
+        cloud_options, credential_provider, retries, sink_options, metadata
     ))]
     fn sink_parquet(
         &self,
@@ -732,6 +765,7 @@ impl PyLazyFrame {
         credential_provider: Option<PyObject>,
         retries: usize,
         sink_options: Wrap<SinkOptions>,
+        metadata: Wrap<Option<KeyValueMetadata>>,
     ) -> PyResult<PyLazyFrame> {
         let compression = parse_parquet_compression(compression, compression_level)?;
 
@@ -740,33 +774,35 @@ impl PyLazyFrame {
             statistics: statistics.0,
             row_group_size,
             data_page_size,
+            key_value_metadata: metadata.0,
         };
 
-        let cloud_options = {
-            let cloud_options = parse_cloud_options(
-                target.unformatted_path().to_str().unwrap(),
-                cloud_options.unwrap_or_default(),
-            )?;
-            Some(
-                cloud_options
-                    .with_max_retries(retries)
-                    .with_credential_provider(
-                        credential_provider.map(polars::prelude::cloud::credential_provider::PlCredentialProvider::from_python_builder),
-                    ),
-            )
+        let cloud_options = match target.base_path() {
+            None => None,
+            Some(base_path) => {
+                let cloud_options = parse_cloud_options(
+                    base_path.to_str().unwrap(),
+                    cloud_options.unwrap_or_default(),
+                )?;
+                Some(
+                    cloud_options
+                        .with_max_retries(retries)
+                        .with_credential_provider(
+                            credential_provider.map(polars::prelude::cloud::credential_provider::PlCredentialProvider::from_python_builder),
+                        ),
+                )
+            },
         };
 
         py.enter_polars(|| {
             let ldf = self.ldf.clone();
             match target {
-                SinkTarget::Path(path) => ldf.sink_parquet(
-                    &path as &dyn AsRef<Path>,
-                    options,
-                    cloud_options,
-                    sink_options.0,
-                ),
+                SinkTarget::File(target) => {
+                    ldf.sink_parquet(target, options, cloud_options, sink_options.0)
+                },
                 SinkTarget::Partition(partition) => ldf.sink_parquet_partitioned(
-                    partition.path.as_ref(),
+                    Arc::new(partition.base_path),
+                    partition.file_path_cb.map(PartitionTargetCallback::Python),
                     partition.variant,
                     options,
                     cloud_options,
@@ -802,18 +838,21 @@ impl PyLazyFrame {
         };
 
         #[cfg(feature = "cloud")]
-        let cloud_options = {
-            let cloud_options = parse_cloud_options(
-                target.unformatted_path().to_str().unwrap(),
-                cloud_options.unwrap_or_default(),
-            )?;
-            Some(
-                cloud_options
-                    .with_max_retries(retries)
-                    .with_credential_provider(
-                        credential_provider.map(polars::prelude::cloud::credential_provider::PlCredentialProvider::from_python_builder),
-                    ),
-            )
+        let cloud_options = match target.base_path() {
+            None => None,
+            Some(base_path) => {
+                let cloud_options = parse_cloud_options(
+                    base_path.to_str().unwrap(),
+                    cloud_options.unwrap_or_default(),
+                )?;
+                Some(
+                    cloud_options
+                        .with_max_retries(retries)
+                        .with_credential_provider(
+                            credential_provider.map(polars::prelude::cloud::credential_provider::PlCredentialProvider::from_python_builder),
+                        ),
+                )
+            },
         };
 
         #[cfg(not(feature = "cloud"))]
@@ -822,11 +861,12 @@ impl PyLazyFrame {
         py.enter_polars(|| {
             let ldf = self.ldf.clone();
             match target {
-                SinkTarget::Path(path) => {
-                    ldf.sink_ipc(path, options, cloud_options, sink_options.0)
+                SinkTarget::File(target) => {
+                    ldf.sink_ipc(target, options, cloud_options, sink_options.0)
                 },
                 SinkTarget::Partition(partition) => ldf.sink_ipc_partitioned(
-                    partition.path.as_ref(),
+                    Arc::new(partition.base_path),
+                    partition.file_path_cb.map(PartitionTargetCallback::Python),
                     partition.variant,
                     options,
                     cloud_options,
@@ -890,18 +930,21 @@ impl PyLazyFrame {
         };
 
         #[cfg(feature = "cloud")]
-        let cloud_options = {
-            let cloud_options = parse_cloud_options(
-                target.unformatted_path().to_str().unwrap(),
-                cloud_options.unwrap_or_default(),
-            )?;
-            Some(
-                cloud_options
-                    .with_max_retries(retries)
-                    .with_credential_provider(
-                        credential_provider.map(polars::prelude::cloud::credential_provider::PlCredentialProvider::from_python_builder),
-                    ),
-            )
+        let cloud_options = match target.base_path() {
+            None => None,
+            Some(base_path) => {
+                let cloud_options = parse_cloud_options(
+                    base_path.to_str().unwrap(),
+                    cloud_options.unwrap_or_default(),
+                )?;
+                Some(
+                    cloud_options
+                        .with_max_retries(retries)
+                        .with_credential_provider(
+                            credential_provider.map(polars::prelude::cloud::credential_provider::PlCredentialProvider::from_python_builder),
+                        ),
+                )
+            },
         };
 
         #[cfg(not(feature = "cloud"))]
@@ -910,11 +953,12 @@ impl PyLazyFrame {
         py.enter_polars(|| {
             let ldf = self.ldf.clone();
             match target {
-                SinkTarget::Path(path) => {
-                    ldf.sink_csv(path, options, cloud_options, sink_options.0)
+                SinkTarget::File(target) => {
+                    ldf.sink_csv(target, options, cloud_options, sink_options.0)
                 },
                 SinkTarget::Partition(partition) => ldf.sink_csv_partitioned(
-                    partition.path.as_ref(),
+                    Arc::new(partition.base_path),
+                    partition.file_path_cb.map(PartitionTargetCallback::Python),
                     partition.variant,
                     options,
                     cloud_options,
@@ -940,28 +984,32 @@ impl PyLazyFrame {
     ) -> PyResult<PyLazyFrame> {
         let options = JsonWriterOptions {};
 
-        let cloud_options = {
-            let cloud_options = parse_cloud_options(
-                target.unformatted_path().to_str().unwrap(),
-                cloud_options.unwrap_or_default(),
-            )?;
-            Some(
+        let cloud_options = match target.base_path() {
+            None => None,
+            Some(base_path) => {
+                let cloud_options = parse_cloud_options(
+                    base_path.to_str().unwrap(),
+                    cloud_options.unwrap_or_default(),
+                )?;
+                Some(
                 cloud_options
                     .with_max_retries(retries)
                     .with_credential_provider(
                         credential_provider.map(polars::prelude::cloud::credential_provider::PlCredentialProvider::from_python_builder),
                     ),
             )
+            },
         };
 
         py.enter_polars(|| {
             let ldf = self.ldf.clone();
             match target {
-                SinkTarget::Path(path) => {
+                SinkTarget::File(path) => {
                     ldf.sink_json(path, options, cloud_options, sink_options.0)
                 },
                 SinkTarget::Partition(partition) => ldf.sink_json_partitioned(
-                    partition.path.as_ref(),
+                    Arc::new(partition.base_path),
+                    partition.file_path_cb.map(PartitionTargetCallback::Python),
                     partition.variant,
                     options,
                     cloud_options,

@@ -1,3 +1,5 @@
+use std::hash::BuildHasher;
+
 use arrow::bitmap::MutableBitmap;
 use either::Either;
 use polars::prelude::*;
@@ -8,7 +10,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
-use pyo3::types::PyList;
+use pyo3::types::{PyList, PyType};
 
 use self::row_encode::{_get_rows_encoded_ca, _get_rows_encoded_ca_unordered};
 use super::PyDataFrame;
@@ -513,7 +515,9 @@ impl PyDataFrame {
         k2: u64,
         k3: u64,
     ) -> PyResult<PySeries> {
-        let hb = PlRandomState::with_seeds(k0, k1, k2, k3);
+        // TODO: don't expose all these seeds.
+        let seed = PlFixedStateQuality::default().hash_one((k0, k1, k2, k3));
+        let hb = PlSeedableRandomStateQuality::seed_from_u64(seed);
         py.enter_polars_series(|| self.df.hash_rows(Some(hb)))
     }
 
@@ -596,6 +600,24 @@ impl PyDataFrame {
             // Be careful not to drop `e` here as that should be dropped by the ffi consumer
             unsafe { core::ptr::write(location.add(i), e) };
         }
+    }
+
+    /// Import [`Self`] via polars-ffi
+    /// # Safety
+    /// [`location`] should be an address that contains [`width`] properly initialized
+    /// [`SeriesExport`]s
+    #[classmethod]
+    pub unsafe fn _import_columns(
+        _cls: &Bound<PyType>,
+        location: usize,
+        width: usize,
+    ) -> PyResult<Self> {
+        use polars_ffi::version_0::import_df;
+
+        let location = location as *mut SeriesExport;
+
+        let df = unsafe { import_df(location, width) }.map_err(PyPolarsErr::from)?;
+        Ok(PyDataFrame { df })
     }
 
     /// Internal utility function to allow direct access to the row encoding from python.

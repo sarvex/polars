@@ -5,6 +5,7 @@ use num_traits::Pow;
 use polars_core::prelude::*;
 use polars_core::{POOL, config};
 use polars_error::feature_gated;
+use polars_utils::mmap::MMapSemaphore;
 use polars_utils::select::select_unpredictable;
 use rayon::prelude::*;
 
@@ -38,7 +39,7 @@ pub fn count_rows(
         polars_utils::open_file(path)?
     };
 
-    let mmap = unsafe { memmap::Mmap::map(&file).unwrap() };
+    let mmap = MMapSemaphore::new_from_file(&file).unwrap();
     let owned = &mut vec![];
     let reader_bytes = maybe_decompress_bytes(mmap.as_ref(), owned)?;
 
@@ -104,6 +105,7 @@ pub fn count_rows_from_slice_par(
                 .count()
         } else {
             CountLines::new(quote_char, eol_char).count(bytes).0
+                + bytes.last().is_some_and(|x| *x != b'\n') as usize
         }
     });
 
@@ -134,6 +136,7 @@ pub fn count_rows_from_slice(
             .count()
     } else {
         CountLines::new(quote_char, eol_char).count(bytes).0
+            + bytes.last().is_some_and(|x| *x != b'\n') as usize
     };
 
     Ok(n - (has_header as usize))

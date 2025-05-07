@@ -1,4 +1,4 @@
-use polars_error::{PolarsError, polars_bail};
+use polars_error::polars_bail;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::PyBytes;
@@ -38,6 +38,26 @@ impl Clone for PythonObject {
 impl From<PyObject> for PythonObject {
     fn from(value: PyObject) -> Self {
         Self(value)
+    }
+}
+
+impl<'py> pyo3::conversion::IntoPyObject<'py> for PythonObject {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(self.0.into_bound(py))
+    }
+}
+
+impl<'py> pyo3::conversion::IntoPyObject<'py> for &PythonObject {
+    type Target = PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        Ok(self.0.bind(py).clone())
     }
 }
 
@@ -251,7 +271,6 @@ mod serde_wrap {
 
             Ok([&[used_cloudpickle as u8, b'C'][..], py_bytes.as_ref()].concat())
         })
-        .map_err(from_pyerr)
     }
 
     pub fn deserialize_pyobject_bytes_maybe_cloudpickle<T: for<'a> From<PyObject>>(
@@ -279,7 +298,6 @@ mod serde_wrap {
             let pyany_bound = pickle.call1(arg)?;
             Ok(PyObject::from(pyany_bound).into())
         })
-        .map_err(from_pyerr)
     }
 }
 
@@ -296,8 +314,4 @@ fn get_python3_version() -> [u8; 2] {
             version_info.getattr("micro").unwrap().extract().unwrap(),
         ]
     })
-}
-
-fn from_pyerr(e: PyErr) -> PolarsError {
-    PolarsError::ComputeError(format!("error raised in python: {e}").into())
 }

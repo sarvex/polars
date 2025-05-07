@@ -7,9 +7,9 @@ use polars_ops::chunked_array::UnicodeForm;
 use polars_ops::series::InterpolationMethod;
 #[cfg(feature = "search_sorted")]
 use polars_ops::series::SearchSortedSide;
-use polars_plan::dsl::function_expr::rolling::RollingFunction;
 use polars_plan::dsl::function_expr::rolling_by::RollingFunctionBy;
 use polars_plan::dsl::{BooleanFunction, StringFunction, TemporalFunction};
+use polars_plan::plans::DynLiteralValue;
 use polars_plan::prelude::{
     AExpr, FunctionExpr, GroupbyOptions, IRAggExpr, LiteralValue, Operator, PowFunction,
     WindowMapping, WindowType,
@@ -532,7 +532,7 @@ impl PyGroupbyOptions {
 
 pub(crate) fn into_py(py: Python<'_>, expr: &AExpr) -> PyResult<PyObject> {
     match expr {
-        AExpr::Explode(_) => Err(PyNotImplementedError::new_err("explode")),
+        AExpr::Explode { .. } => Err(PyNotImplementedError::new_err("explode")),
         AExpr::Alias(inner, name) => Alias {
             expr: inner.0,
             name: name.into_py_any(py)?,
@@ -543,96 +543,34 @@ pub(crate) fn into_py(py: Python<'_>, expr: &AExpr) -> PyResult<PyObject> {
         }
         .into_py_any(py),
         AExpr::Literal(lit) => {
-            use LiteralValue::*;
+            use polars_core::prelude::AnyValue;
             let dtype: PyObject = Wrap(lit.get_datatype()).into_py_any(py)?;
-            match lit {
-                Float(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
+            let py_value = match lit {
+                LiteralValue::Dyn(d) => match d {
+                    DynLiteralValue::Int(v) => v.into_py_any(py)?,
+                    DynLiteralValue::Float(v) => v.into_py_any(py)?,
+                    DynLiteralValue::Str(v) => v.into_py_any(py)?,
+                    DynLiteralValue::List(_) => todo!(),
                 },
-                Float32(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
+                LiteralValue::Scalar(sc) => {
+                    match sc.as_any_value() {
+                        // AnyValue conversion of duration to python's
+                        // datetime.timedelta drops nanoseconds because
+                        // there is no support for them. See
+                        // https://github.com/python/cpython/issues/59648
+                        AnyValue::Duration(delta, _) => delta.into_py_any(py)?,
+                        any => Wrap(any).into_py_any(py)?,
+                    }
                 },
-                Float64(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
+                LiteralValue::Range(_) => {
+                    return Err(PyNotImplementedError::new_err("range literal"));
                 },
-                Int(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                Int8(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                Int16(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                Int32(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                Int64(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                Int128(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                UInt8(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                UInt16(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                UInt32(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                UInt64(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                Boolean(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                StrCat(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                String(v) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                Null => Literal {
-                    value: py.None(),
-                    dtype,
-                },
-                Binary(_) => return Err(PyNotImplementedError::new_err("binary literal")),
-                Range { .. } => return Err(PyNotImplementedError::new_err("range literal")),
-                OtherScalar { .. } => return Err(PyNotImplementedError::new_err("scalar literal")),
-                Date(..) | DateTime(..) | Decimal(..) => Literal {
-                    value: Wrap(lit.to_any_value().unwrap()).into_py_any(py)?,
-                    dtype,
-                },
-                Duration(v, _) => Literal {
-                    value: v.into_py_any(py)?,
-                    dtype,
-                },
-                Time(ns) => Literal {
-                    value: ns.into_py_any(py)?,
-                    dtype,
-                },
-                Series(s) => Literal {
-                    value: PySeries::new((**s).clone()).into_py_any(py)?,
-                    dtype,
-                },
+                LiteralValue::Series(s) => PySeries::new((**s).clone()).into_py_any(py)?,
+            };
+
+            Literal {
+                value: py_value,
+                dtype,
             }
         }
         .into_py_any(py),
@@ -1155,34 +1093,8 @@ pub(crate) fn into_py(py: Python<'_>, expr: &AExpr) -> PyResult<PyObject> {
                 #[cfg(feature = "sign")]
                 FunctionExpr::Sign => ("sign",).into_py_any(py),
                 FunctionExpr::FillNull => ("fill_null",).into_py_any(py),
-                FunctionExpr::RollingExpr(rolling) => match rolling {
-                    RollingFunction::Min(_) => {
-                        return Err(PyNotImplementedError::new_err("rolling min"));
-                    },
-                    RollingFunction::Max(_) => {
-                        return Err(PyNotImplementedError::new_err("rolling max"));
-                    },
-                    RollingFunction::Mean(_) => {
-                        return Err(PyNotImplementedError::new_err("rolling mean"));
-                    },
-                    RollingFunction::Sum(_) => {
-                        return Err(PyNotImplementedError::new_err("rolling sum"));
-                    },
-                    RollingFunction::Quantile(_) => {
-                        return Err(PyNotImplementedError::new_err("rolling quantile"));
-                    },
-                    RollingFunction::Var(_) => {
-                        return Err(PyNotImplementedError::new_err("rolling var"));
-                    },
-                    RollingFunction::Std(_) => {
-                        return Err(PyNotImplementedError::new_err("rolling std"));
-                    },
-                    RollingFunction::Skew(_, _) => {
-                        return Err(PyNotImplementedError::new_err("rolling skew"));
-                    },
-                    RollingFunction::CorrCov { .. } => {
-                        return Err(PyNotImplementedError::new_err("rolling cor_cov"));
-                    },
+                FunctionExpr::RollingExpr(rolling) => {
+                    return Err(PyNotImplementedError::new_err(format!("{}", rolling)));
                 },
                 FunctionExpr::RollingExprBy(rolling) => match rolling {
                     RollingFunctionBy::MinBy(_) => {
@@ -1245,9 +1157,8 @@ pub(crate) fn into_py(py: Python<'_>, expr: &AExpr) -> PyResult<PyObject> {
                 FunctionExpr::ApproxNUnique => ("approx_n_unique",).into_py_any(py),
                 FunctionExpr::Coalesce => ("coalesce",).into_py_any(py),
                 FunctionExpr::ShrinkType => ("shrink_dtype",).into_py_any(py),
-                FunctionExpr::Diff(n, null_behaviour) => (
+                FunctionExpr::Diff(null_behaviour) => (
                     "diff",
-                    n,
                     match null_behaviour {
                         NullBehavior::Drop => "drop",
                         NullBehavior::Ignore => "ignore",
@@ -1272,7 +1183,9 @@ pub(crate) fn into_py(py: Python<'_>, expr: &AExpr) -> PyResult<PyObject> {
                 FunctionExpr::Log1p => ("log1p",).into_py_any(py),
                 FunctionExpr::Exp => ("exp",).into_py_any(py),
                 FunctionExpr::Unique(maintain_order) => ("unique", maintain_order).into_py_any(py),
-                FunctionExpr::Round { decimals } => ("round", decimals).into_py_any(py),
+                FunctionExpr::Round { decimals, mode } => {
+                    ("round", decimals, Into::<&str>::into(mode)).into_py_any(py)
+                },
                 FunctionExpr::RoundSF { digits } => ("round_sig_figs", digits).into_py_any(py),
                 FunctionExpr::Floor => ("floor",).into_py_any(py),
                 FunctionExpr::Ceil => ("ceil",).into_py_any(py),
@@ -1314,8 +1227,6 @@ pub(crate) fn into_py(py: Python<'_>, expr: &AExpr) -> PyResult<PyObject> {
                 FunctionExpr::FfiPlugin { .. } => {
                     return Err(PyNotImplementedError::new_err("ffi plugin"));
                 },
-                FunctionExpr::BackwardFill { limit } => ("backward_fill", limit).into_py_any(py),
-                FunctionExpr::ForwardFill { limit } => ("forward_fill", limit).into_py_any(py),
                 FunctionExpr::SumHorizontal { ignore_nulls } => {
                     ("sum_horizontal", ignore_nulls).into_py_any(py)
                 },

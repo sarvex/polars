@@ -1,15 +1,11 @@
 use std::borrow::Cow;
-#[cfg(feature = "timezones")]
-use std::sync::LazyLock;
 
 use arrow::legacy::utils::CustomIterTools;
-#[cfg(feature = "timezones")]
-use polars_core::chunked_array::temporal::validate_time_zone;
 use polars_core::utils::handle_casting_failures;
 #[cfg(feature = "dtype-struct")]
 use polars_utils::format_pl_smallstr;
 #[cfg(feature = "regex")]
-use regex::{NoExpand, Regex, escape};
+use regex::{NoExpand, escape};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -17,8 +13,9 @@ use super::*;
 use crate::{map, map_as_slice};
 
 #[cfg(all(feature = "regex", feature = "timezones"))]
-static TZ_AWARE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(%z)|(%:z)|(%::z)|(%:::z)|(%#z)|(^%\+$)").unwrap());
+polars_utils::regex_cache::cached_regex! {
+    static TZ_AWARE_RE = r"(%z)|(%:z)|(%::z)|(%:::z)|(%#z)|(^%\+$)";
+}
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, PartialEq, Debug, Eq, Hash)]
@@ -214,6 +211,85 @@ impl StringFunction {
             FindMany { .. } => mapper.with_dtype(DataType::List(Box::new(DataType::UInt32))),
             #[cfg(feature = "regex")]
             EscapeRegex => mapper.with_same_dtype(),
+        }
+    }
+
+    pub fn function_options(&self) -> FunctionOptions {
+        use StringFunction as S;
+        match self {
+            #[cfg(feature = "concat_str")]
+            S::ConcatHorizontal { .. } => FunctionOptions::elementwise()
+                .with_flags(|f| f | FunctionFlags::INPUT_WILDCARD_EXPANSION),
+            #[cfg(feature = "concat_str")]
+            S::ConcatVertical { .. } => FunctionOptions::aggregation(),
+            #[cfg(feature = "regex")]
+            S::Contains { .. } => {
+                FunctionOptions::elementwise().with_supertyping(Default::default())
+            },
+            S::CountMatches(_) => FunctionOptions::elementwise(),
+            S::EndsWith | S::StartsWith | S::Extract(_) => {
+                FunctionOptions::elementwise().with_supertyping(Default::default())
+            },
+            S::ExtractAll => FunctionOptions::elementwise(),
+            #[cfg(feature = "extract_groups")]
+            S::ExtractGroups { .. } => FunctionOptions::elementwise(),
+            #[cfg(feature = "string_to_integer")]
+            S::ToInteger { .. } => FunctionOptions::elementwise(),
+            #[cfg(feature = "regex")]
+            S::Find { .. } => FunctionOptions::elementwise().with_supertyping(Default::default()),
+            #[cfg(feature = "extract_jsonpath")]
+            S::JsonDecode { dtype: Some(_), .. } => FunctionOptions::elementwise(),
+            // because dtype should be inferred only once and be consistent over chunks/morsels.
+            #[cfg(feature = "extract_jsonpath")]
+            S::JsonDecode { dtype: None, .. } => FunctionOptions::elementwise_with_infer(),
+            #[cfg(feature = "extract_jsonpath")]
+            S::JsonPathMatch => FunctionOptions::elementwise(),
+            S::LenBytes | S::LenChars => FunctionOptions::elementwise(),
+            #[cfg(feature = "regex")]
+            S::Replace { .. } => {
+                FunctionOptions::elementwise().with_supertyping(Default::default())
+            },
+            #[cfg(feature = "string_normalize")]
+            S::Normalize { .. } => FunctionOptions::elementwise(),
+            #[cfg(feature = "string_reverse")]
+            S::Reverse => FunctionOptions::elementwise(),
+            #[cfg(feature = "temporal")]
+            S::Strptime(_, options) if options.format.is_some() => FunctionOptions::elementwise(),
+            S::Strptime(_, _) => FunctionOptions::elementwise_with_infer(),
+            S::Split(_) => FunctionOptions::elementwise(),
+            #[cfg(feature = "nightly")]
+            S::Titlecase => FunctionOptions::elementwise(),
+            #[cfg(feature = "dtype-decimal")]
+            S::ToDecimal(_) => FunctionOptions::elementwise_with_infer(),
+            #[cfg(feature = "string_encoding")]
+            S::HexEncode | S::Base64Encode => FunctionOptions::elementwise(),
+            #[cfg(feature = "binary_encoding")]
+            S::HexDecode(_) | S::Base64Decode(_) => FunctionOptions::elementwise(),
+            S::Uppercase | S::Lowercase => FunctionOptions::elementwise(),
+            S::StripChars
+            | S::StripCharsStart
+            | S::StripCharsEnd
+            | S::StripPrefix
+            | S::StripSuffix
+            | S::Head
+            | S::Tail => FunctionOptions::elementwise(),
+            S::Slice => FunctionOptions::elementwise(),
+            #[cfg(feature = "string_pad")]
+            S::PadStart { .. } | S::PadEnd { .. } | S::ZFill => FunctionOptions::elementwise(),
+            #[cfg(feature = "dtype-struct")]
+            S::SplitExact { .. } => FunctionOptions::elementwise(),
+            #[cfg(feature = "dtype-struct")]
+            S::SplitN(_) => FunctionOptions::elementwise(),
+            #[cfg(feature = "find_many")]
+            S::ContainsAny { .. } => FunctionOptions::elementwise(),
+            #[cfg(feature = "find_many")]
+            S::ReplaceMany { .. } => FunctionOptions::elementwise(),
+            #[cfg(feature = "find_many")]
+            S::ExtractMany { .. } => FunctionOptions::elementwise(),
+            #[cfg(feature = "find_many")]
+            S::FindMany { .. } => FunctionOptions::elementwise(),
+            #[cfg(feature = "regex")]
+            S::EscapeRegex => FunctionOptions::elementwise(),
         }
     }
 }
@@ -441,7 +517,7 @@ impl From<StringFunction> for SpecialEq<Arc<dyn ColumnsUdf>> {
 #[cfg(feature = "find_many")]
 fn contains_any(s: &[Column], ascii_case_insensitive: bool) -> PolarsResult<Column> {
     let ca = s[0].str()?;
-    let patterns = s[1].str()?;
+    let patterns = s[1].list()?;
     polars_ops::chunked_array::strings::contains_any(ca, patterns, ascii_case_insensitive)
         .map(|out| out.into_column())
 }
@@ -449,8 +525,8 @@ fn contains_any(s: &[Column], ascii_case_insensitive: bool) -> PolarsResult<Colu
 #[cfg(feature = "find_many")]
 fn replace_many(s: &[Column], ascii_case_insensitive: bool) -> PolarsResult<Column> {
     let ca = s[0].str()?;
-    let patterns = s[1].str()?;
-    let replace_with = s[2].str()?;
+    let patterns = s[1].list()?;
+    let replace_with = s[2].list()?;
     polars_ops::chunked_array::strings::replace_all(
         ca,
         patterns,
@@ -467,11 +543,11 @@ fn extract_many(
     overlapping: bool,
 ) -> PolarsResult<Column> {
     let ca = s[0].str()?;
-    let patterns = &s[1];
+    let patterns = s[1].list()?;
 
     polars_ops::chunked_array::strings::extract_many(
         ca,
-        patterns.as_materialized_series(),
+        patterns,
         ascii_case_insensitive,
         overlapping,
     )
@@ -485,15 +561,10 @@ fn find_many(
     overlapping: bool,
 ) -> PolarsResult<Column> {
     let ca = s[0].str()?;
-    let patterns = &s[1];
+    let patterns = s[1].list()?;
 
-    polars_ops::chunked_array::strings::find_many(
-        ca,
-        patterns.as_materialized_series(),
-        ascii_case_insensitive,
-        overlapping,
-    )
-    .map(|out| out.into_column())
+    polars_ops::chunked_array::strings::find_many(ca, patterns, ascii_case_insensitive, overlapping)
+        .map(|out| out.into_column())
 }
 
 fn uppercase(s: &Column) -> PolarsResult<Column> {
@@ -542,17 +613,17 @@ pub(super) fn find(s: &[Column], literal: bool, strict: bool) -> PolarsResult<Co
 
 pub(super) fn ends_with(s: &[Column]) -> PolarsResult<Column> {
     _check_same_length(s, "ends_with")?;
-    let ca = &s[0].str()?.as_binary();
-    let suffix = &s[1].str()?.as_binary();
+    let ca = s[0].str()?.as_binary();
+    let suffix = s[1].str()?.as_binary();
 
-    Ok(ca.ends_with_chunked(suffix).into_column())
+    Ok(ca.ends_with_chunked(&suffix)?.into_column())
 }
 
 pub(super) fn starts_with(s: &[Column]) -> PolarsResult<Column> {
     _check_same_length(s, "starts_with")?;
-    let ca = s[0].str()?;
-    let prefix = s[1].str()?;
-    Ok(ca.starts_with_chunked(prefix).into_column())
+    let ca = s[0].str()?.as_binary();
+    let prefix = s[1].str()?.as_binary();
+    Ok(ca.starts_with_chunked(&prefix)?.into_column())
 }
 
 /// Extract a regex pattern from the a string value.
@@ -713,9 +784,9 @@ pub(super) fn split(s: &[Column], inclusive: bool) -> PolarsResult<Column> {
     let by = s[1].str()?;
 
     if inclusive {
-        Ok(ca.split_inclusive(by).into_column())
+        Ok(ca.split_inclusive(by)?.into_column())
     } else {
-        Ok(ca.split(by).into_column())
+        Ok(ca.split(by)?.into_column())
     }
 }
 
@@ -747,15 +818,22 @@ fn to_datetime(
 ) -> PolarsResult<Column> {
     let datetime_strings = &s[0].str()?;
     let ambiguous = &s[1].str()?;
+
+    polars_ensure!(
+        datetime_strings.len() == ambiguous.len()
+            || datetime_strings.len() == 1
+            || ambiguous.len() == 1,
+        length_mismatch = "str.strptime",
+        datetime_strings.len(),
+        ambiguous.len()
+    );
+
     let tz_aware = match &options.format {
         #[cfg(all(feature = "regex", feature = "timezones"))]
         Some(format) => TZ_AWARE_RE.is_match(format),
         _ => false,
     };
-    #[cfg(feature = "timezones")]
-    if let Some(time_zone) = time_zone {
-        validate_time_zone(time_zone)?;
-    }
+
     let out = if options.exact {
         datetime_strings
             .as_datetime(
@@ -904,7 +982,7 @@ fn replace_n<'a>(
                 pat = escape(&pat)
             }
 
-            let reg = Regex::new(&pat)?;
+            let reg = polars_utils::regex_cache::compile_regex(&pat)?;
 
             let f = |s: &'a str, val: &'a str| {
                 if lit && (s.len() <= 32) {
@@ -962,7 +1040,7 @@ fn replace_all<'a>(
                 pat = escape(&pat)
             }
 
-            let reg = Regex::new(&pat)?;
+            let reg = polars_utils::regex_cache::compile_regex(&pat)?;
 
             let f = |s: &'a str, val: &'a str| {
                 // According to the docs for replace_all

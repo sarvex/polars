@@ -306,9 +306,7 @@ impl WindowExpr {
                         },
                         Expr::Function { options, .. }
                         | Expr::AnonymousFunction { options, .. } => {
-                            if options.flags.contains(FunctionFlags::RETURNS_SCALAR)
-                                && matches!(options.collect_groups, ApplyOptions::GroupWise)
-                            {
+                            if options.flags.returns_scalar() {
                                 agg_col = true;
                             }
                         },
@@ -408,7 +406,18 @@ impl PhysicalExpr for WindowExpr {
 
         if df.is_empty() {
             let field = self.phys_function.to_field(df.schema())?;
-            return Ok(Column::full_null(field.name().clone(), 0, field.dtype()));
+            match self.mapping {
+                WindowMapping::Join => {
+                    return Ok(Column::full_null(
+                        field.name().clone(),
+                        0,
+                        &DataType::List(Box::new(field.dtype().clone())),
+                    ));
+                },
+                _ => {
+                    return Ok(Column::full_null(field.name().clone(), 0, field.dtype()));
+                },
+            }
         }
 
         let group_by_columns = self
@@ -522,7 +531,7 @@ impl PhysicalExpr for WindowExpr {
                 Ok(out.into_column())
             },
             Explode => {
-                let mut out = ac.aggregated().explode()?;
+                let mut out = ac.aggregated().explode(false)?;
                 if let Some(name) = &self.out_name {
                     out.rename(name.clone());
                 }
@@ -532,7 +541,7 @@ impl PhysicalExpr for WindowExpr {
                 // TODO!
                 // investigate if sorted arrays can be return directly
                 let out_column = ac.aggregated();
-                let flattened = out_column.explode()?;
+                let flattened = out_column.explode(false)?;
                 // we extend the lifetime as we must convince the compiler that ac lives
                 // long enough. We drop `GrouBy` when we are done with `ac`.
                 let ac = unsafe {
@@ -828,7 +837,9 @@ where
         unsafe { values.set_len(len) }
         let validity = Bitmap::from(validity);
         let arr = PrimitiveArray::new(
-            T::get_dtype().to_physical().to_arrow(CompatLevel::newest()),
+            T::get_static_dtype()
+                .to_physical()
+                .to_arrow(CompatLevel::newest()),
             values.into(),
             Some(validity),
         );

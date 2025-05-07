@@ -13,7 +13,7 @@ use super::*;
 // (Major, Minor)
 // Add a field -> increment minor
 // Remove or modify a field -> increment major and reset minor
-pub static DSL_VERSION: (u16, u16) = (0, 1);
+pub static DSL_VERSION: (u16, u16) = (2, 0);
 static DSL_MAGIC_BYTES: &[u8] = b"DSL_VERSION";
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -36,10 +36,11 @@ pub enum DslPlan {
         sources: ScanSources,
         /// Materialized at IR except for AnonymousScan.
         file_info: Option<FileInfo>,
-        file_options: Box<FileScanOptions>,
+        unified_scan_args: Box<UnifiedScanArgs>,
         scan_type: Box<FileScan>,
         /// Local use cases often repeatedly collect the same `LazyFrame` (e.g. in interactive notebook use-cases),
         /// so we cache the IR conversion here, as the path expansion can be quite slow (especially for cloud paths).
+        /// We don't have the arena, as this is always a source node.
         #[cfg_attr(feature = "serde", serde(skip))]
         cached_ir: Arc<Mutex<Option<IR>>>,
     },
@@ -154,7 +155,7 @@ impl Clone for DslPlan {
             Self::PythonScan { options } => Self::PythonScan { options: options.clone() },
             Self::Filter { input, predicate } => Self::Filter { input: input.clone(), predicate: predicate.clone() },
             Self::Cache { input, id } => Self::Cache { input: input.clone(), id: id.clone() },
-            Self::Scan { sources, file_info, file_options, scan_type, cached_ir } => Self::Scan { sources: sources.clone(), file_info: file_info.clone(), file_options: file_options.clone(), scan_type: scan_type.clone(), cached_ir: cached_ir.clone() },
+            Self::Scan { sources, file_info, unified_scan_args, scan_type, cached_ir } => Self::Scan { sources: sources.clone(), file_info: file_info.clone(), unified_scan_args: unified_scan_args.clone(), scan_type: scan_type.clone(), cached_ir: cached_ir.clone() },
             Self::DataFrameScan { df, schema, } => Self::DataFrameScan { df: df.clone(), schema: schema.clone(),  },
             Self::Select { expr, input, options } => Self::Select { expr: expr.clone(), input: input.clone(), options: options.clone() },
             Self::GroupBy { input, keys, aggs,  apply, maintain_order, options } => Self::GroupBy { input: input.clone(), keys: keys.clone(), aggs: aggs.clone(), apply: apply.clone(), maintain_order: maintain_order.clone(), options: options.clone() },
@@ -244,8 +245,8 @@ impl DslPlan {
         // The DSL serialization is forward compatible if fields don't change,
         // so we don't check equality here, we just use this version
         // to inform users when the deserialization fails.
-        let major = u16::from_be_bytes(version_magic[MAGIC_LEN..MAGIC_LEN + 2].try_into().unwrap());
-        let minor = u16::from_be_bytes(
+        let major = u16::from_le_bytes(version_magic[MAGIC_LEN..MAGIC_LEN + 2].try_into().unwrap());
+        let minor = u16::from_le_bytes(
             version_magic[MAGIC_LEN + 2..MAGIC_LEN + 4]
                 .try_into()
                 .unwrap(),

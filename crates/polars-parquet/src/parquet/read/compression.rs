@@ -42,7 +42,10 @@ fn decompress_v2(
 
         (buffer[..offset]).copy_from_slice(&compressed[..offset]);
 
-        compression::decompress(compression, &compressed[offset..], &mut buffer[offset..])?;
+        // https://github.com/pola-rs/polars/issues/22170
+        if compressed.len() > offset {
+            compression::decompress(compression, &compressed[offset..], &mut buffer[offset..])?;
+        }
     } else {
         if buffer.len() != compressed.len() {
             return Err(ParquetError::oos(
@@ -67,18 +70,12 @@ pub fn decompress(compressed_page: CompressedPage, buffer: &mut Vec<u8>) -> Parq
         (_, CompressedPage::Data(page)) => {
             // prepare the compression buffer
             let read_size = page.uncompressed_size();
-
             if read_size > buffer.capacity() {
-                // dealloc and ignore region, replacing it by a new region.
-                // This won't reallocate - it frees and calls `alloc_zeroed`
-                *buffer = vec![0; read_size];
-            } else if read_size > buffer.len() {
-                // fill what we need with zeros so that we can use them in `Read`.
-                // This won't reallocate
-                buffer.resize(read_size, 0);
-            } else {
-                buffer.truncate(read_size);
+                // Clear before resizing to avoid memcpy'ing junk we don't care about anymore rather
+                // than just memset'ing zeroes.
+                buffer.clear();
             }
+            buffer.resize(read_size, 0);
 
             match page.header() {
                 DataPageHeader::V1(_) => decompress_v1(&page.buffer, page.compression, buffer)?,
@@ -98,18 +95,13 @@ pub fn decompress(compressed_page: CompressedPage, buffer: &mut Vec<u8>) -> Parq
         (_, CompressedPage::Dict(page)) => {
             // prepare the compression buffer
             let read_size = page.uncompressed_page_size;
-
             if read_size > buffer.capacity() {
-                // dealloc and ignore region, replacing it by a new region.
-                // This won't reallocate - it frees and calls `alloc_zeroed`
-                *buffer = vec![0; read_size];
-            } else if read_size > buffer.len() {
-                // fill what we need with zeros so that we can use them in `Read`.
-                // This won't reallocate
-                buffer.resize(read_size, 0);
-            } else {
-                buffer.truncate(read_size);
+                // Clear before resizing to avoid memcpy'ing junk we don't care about anymore rather
+                // than just memset'ing zeroes.
+                buffer.clear();
             }
+            buffer.resize(read_size, 0);
+
             decompress_v1(&page.buffer, page.compression(), buffer)?;
             let buffer = CowBuffer::Owned(std::mem::take(buffer));
 
@@ -247,5 +239,45 @@ impl Iterator for BasicDecompressor {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.reader.size_hint()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use polars_parquet_format::Encoding;
+
+    use super::*;
+
+    #[test]
+    fn test_decompress_v2_empty_datapage() {
+        let compressions = [
+            Compression::Snappy,
+            Compression::Gzip,
+            Compression::Lzo,
+            Compression::Brotli,
+            Compression::Lz4,
+            Compression::Zstd,
+            Compression::Lz4Raw,
+        ];
+
+        // this datapage has an empty compressed section after the first two bytes (uncompressed definition levels)
+        let compressed: &mut Vec<u8> = &mut vec![0x03, 0x00];
+        let page_header = DataPageHeaderV2::new(1, 1, 1, Encoding::PLAIN, 2, 0, true, None);
+        let buffer: &mut Vec<u8> = &mut vec![0, 2];
+
+        compressions.iter().for_each(|compression| {
+            test_decompress_v2_datapage(compressed, &page_header, *compression, buffer, compressed)
+        });
+    }
+
+    fn test_decompress_v2_datapage(
+        compressed: &[u8],
+        page_header: &DataPageHeaderV2,
+        compression: Compression,
+        buffer: &mut [u8],
+        expected: &[u8],
+    ) {
+        decompress_v2(compressed, page_header, compression, buffer).unwrap();
+        assert_eq!(buffer, expected);
     }
 }

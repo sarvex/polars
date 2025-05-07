@@ -8,6 +8,7 @@ import pytest
 import polars as pl
 from polars.exceptions import ColumnNotFoundError
 from polars.testing import assert_frame_equal, assert_series_equal
+from tests.unit.conftest import with_string_cache_if_auto_streaming
 
 if TYPE_CHECKING:
     from polars._typing import PolarsDataType
@@ -92,8 +93,9 @@ def test_unique() -> None:
     assert_frame_equal(result, expected)
 
     s0 = pl.Series("a", [1, 2, None, 2])
-    # test if the null is included
-    assert s0.unique().to_list() == [None, 1, 2]
+    expected_s = pl.Series("a", [1, 2, None])
+    assert_series_equal(s0.unique(maintain_order=True), expected_s)
+    assert_series_equal(s0.unique(maintain_order=False), expected_s, check_order=False)
 
 
 def test_struct_unique_df() -> None:
@@ -141,14 +143,15 @@ def test_unique_null(maintain_order: bool) -> None:
 )
 @pytest.mark.usefixtures("test_global_and_local")
 def test_unique_categorical(input: list[str | None], output: list[str | None]) -> None:
-    s = pl.Series(input, dtype=pl.Categorical)
-    result = s.unique(maintain_order=True)
-    expected = pl.Series(output, dtype=pl.Categorical)
-    assert_series_equal(result, expected)
+    with pl.StringCache():
+        s = pl.Series(input, dtype=pl.Categorical)
+        result = s.unique(maintain_order=True)
+        expected = pl.Series(output, dtype=pl.Categorical)
+        assert_series_equal(result, expected)
 
-    result = s.unique(maintain_order=False).sort()
-    expected = pl.Series(output, dtype=pl.Categorical)
-    assert_series_equal(result, expected)
+        result = s.unique(maintain_order=False)
+        expected = pl.Series(output, dtype=pl.Categorical)
+        assert_series_equal(result, expected, check_order=False)
 
 
 def test_unique_categorical_global() -> None:
@@ -204,6 +207,7 @@ def test_unique_with_bad_subset(
 
 
 @pytest.mark.usefixtures("test_global_and_local")
+@with_string_cache_if_auto_streaming
 def test_categorical_unique_19409() -> None:
     df = pl.DataFrame({"x": [str(n % 50) for n in range(127)]}).cast(pl.Categorical)
     uniq = df.unique()
@@ -253,7 +257,7 @@ def test_unique_check_order_20480() -> None:
 def test_predicate_pushdown_unique() -> None:
     q = (
         pl.LazyFrame({"id": [1, 2, 3]})
-        .with_columns(pl.date(2024, 1, 1) + pl.duration(days=[1, 2, 3]))  # type: ignore[arg-type]
+        .with_columns(pl.date(2024, 1, 1) + pl.duration(days=pl.Series([1, 2, 3])))  # type: ignore[arg-type]
         .unique()
     )
 
@@ -285,3 +289,10 @@ def test_unique_lengths_21654() -> None:
     for n in range(0, 1000, 37):
         df = pl.DataFrame({"x": pl.int_range(n, eager=True)})
         assert df.unique().height == n
+
+
+def test_unique_keep_last_with_slice_22470() -> None:
+    lf = pl.LazyFrame({"x": [0, 1, 2, 3, 4, 5, 6, 7, 3, 4, 5, 6, 7, 8, 9, 10]})
+    result = lf.unique(keep="last", maintain_order=True).slice(3, 4).collect()
+    expected = pl.DataFrame({"x": [3, 4, 5, 6]})
+    assert_frame_equal(result, expected)

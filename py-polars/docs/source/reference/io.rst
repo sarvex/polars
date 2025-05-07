@@ -109,7 +109,18 @@ Sink to disk with differing partitioning strategies.
 
    PartitionByKey
    PartitionMaxSize
+   PartitionParted
 
+.. currentmodule:: polars.io.partition
+
+.. autosummary::
+   :toctree: api/
+
+   KeyedPartition
+   BasePartitionContext
+   KeyedPartitionContext
+
+.. currentmodule:: polars
 
 Parquet
 ~~~~~~~
@@ -117,6 +128,7 @@ Parquet
    :toctree: api/
 
    read_parquet
+   read_parquet_metadata
    read_parquet_schema
    scan_parquet
    DataFrame.write_parquet

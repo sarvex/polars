@@ -17,10 +17,11 @@ use polars_time::{ClosedWindow, Duration};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use super::{FunctionExpr, FunctionOptions};
 use crate::dsl::SpecialEq;
 use crate::dsl::function_expr::FieldsMapper;
 use crate::map_as_slice;
-use crate::prelude::ColumnsUdf;
+use crate::prelude::{ColumnsUdf, FunctionFlags};
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Clone, PartialEq, Debug, Eq, Hash)]
@@ -149,6 +150,48 @@ impl RangeFunction {
             TimeRanges { .. } => mapper.with_dtype(DataType::List(Box::new(DataType::Time))),
         }
     }
+
+    pub fn function_options(&self) -> FunctionOptions {
+        use RangeFunction as R;
+        match self {
+            R::IntRange { .. } => {
+                FunctionOptions::row_separable().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+            R::LinearSpace { .. } => {
+                FunctionOptions::row_separable().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+            #[cfg(feature = "dtype-date")]
+            R::DateRange { .. } => {
+                FunctionOptions::row_separable().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+            #[cfg(feature = "dtype-datetime")]
+            R::DatetimeRange { .. } => FunctionOptions::row_separable()
+                .with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+                .with_supertyping(Default::default()),
+            #[cfg(feature = "dtype-time")]
+            R::TimeRange { .. } => {
+                FunctionOptions::row_separable().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+            R::IntRanges => {
+                FunctionOptions::elementwise().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+            R::LinearSpaces { .. } => {
+                FunctionOptions::elementwise().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+            #[cfg(feature = "dtype-date")]
+            R::DateRanges { .. } => {
+                FunctionOptions::elementwise().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+            #[cfg(feature = "dtype-datetime")]
+            R::DatetimeRanges { .. } => FunctionOptions::elementwise()
+                .with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+                .with_supertyping(Default::default()),
+            #[cfg(feature = "dtype-time")]
+            R::TimeRanges { .. } => {
+                FunctionOptions::elementwise().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+        }
+    }
 }
 
 impl Display for RangeFunction {
@@ -242,5 +285,11 @@ impl From<RangeFunction> for SpecialEq<Arc<dyn ColumnsUdf>> {
                 map_as_slice!(time_range::time_ranges, interval, closed)
             },
         }
+    }
+}
+
+impl From<RangeFunction> for FunctionExpr {
+    fn from(value: RangeFunction) -> Self {
+        Self::Range(value)
     }
 }

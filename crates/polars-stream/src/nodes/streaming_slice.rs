@@ -21,7 +21,7 @@ impl StreamingSliceNode {
 
 impl ComputeNode for StreamingSliceNode {
     fn name(&self) -> &str {
-        "streaming_slice"
+        "streaming-slice"
     }
 
     fn update_state(
@@ -81,7 +81,7 @@ impl ComputeNode for StreamingSliceNode {
                     morsel.source_token().stop();
                 }
 
-                if !morsel.df().is_empty() && send.send(morsel).await.is_err() {
+                if morsel.df().height() > 0 && send.send(morsel).await.is_err() {
                     break;
                 }
 

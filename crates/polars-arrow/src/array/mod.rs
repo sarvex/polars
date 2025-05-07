@@ -25,6 +25,8 @@ use crate::bitmap::{Bitmap, MutableBitmap};
 use crate::datatypes::ArrowDataType;
 
 pub mod physical_binary;
+#[cfg(feature = "proptest")]
+pub mod proptest;
 
 pub trait Splitable: Sized {
     fn check_bound(&self, offset: usize) -> bool;
@@ -680,10 +682,12 @@ pub mod iterator;
 mod binview;
 mod values;
 
-pub use binary::{BinaryArray, BinaryValueIter, MutableBinaryArray, MutableBinaryValuesArray};
+pub use binary::{
+    BinaryArray, BinaryArrayBuilder, BinaryValueIter, MutableBinaryArray, MutableBinaryValuesArray,
+};
 pub use binview::{
     BinaryViewArray, BinaryViewArrayGeneric, BinaryViewArrayGenericBuilder, MutableBinaryViewArray,
-    MutablePlBinary, MutablePlString, Utf8ViewArray, View, ViewType, validate_utf8_view,
+    MutablePlBinary, MutablePlString, Utf8ViewArray, View, ViewType,
 };
 pub use boolean::{BooleanArray, BooleanArrayBuilder, MutableBooleanArray};
 pub use dictionary::{DictionaryArray, DictionaryKey, MutableDictionaryArray};

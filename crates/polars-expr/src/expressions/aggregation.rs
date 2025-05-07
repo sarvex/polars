@@ -14,7 +14,7 @@ use polars_ops::prelude::nan_propagating_aggregate;
 use rayon::prelude::*;
 
 use super::*;
-use crate::expressions::AggState::{AggregatedList, AggregatedScalar};
+use crate::expressions::AggState::AggregatedScalar;
 use crate::expressions::{
     AggState, AggregationContext, PartitionedAggregation, PhysicalExpr, UpdateGroups,
 };
@@ -164,7 +164,9 @@ impl PhysicalExpr for AggregationExpr {
         let mut ac = self.input.evaluate_on_groups(df, groups, state)?;
         // don't change names by aggregations as is done in polars-core
         let keep_name = ac.get_values().name().clone();
-        polars_ensure!(!matches!(ac.agg_state(), AggState::Literal(_)), ComputeError: "cannot aggregate a literal");
+
+        // Literals cannot be aggregated except for implode.
+        polars_ensure!((!matches!(ac.agg_state(), AggState::Literal(_)) || matches!(self.agg_type.groupby, GroupByMethod::Implode)), ComputeError: "cannot aggregate a literal");
 
         if let AggregatedScalar(_) = ac.agg_state() {
             match self.agg_type.groupby {
@@ -354,18 +356,23 @@ impl PhysicalExpr for AggregationExpr {
                     let c = match ac.agg_state() {
                         // mean agg:
                         // -> f64 -> list<f64>
-                        AggState::AggregatedScalar(c) => c
+                        AggregatedScalar(c) => c
                             .reshape_list(&[
                                 ReshapeDimension::Infer,
                                 ReshapeDimension::new_dimension(1),
                             ])
                             .unwrap(),
+                        // Auto-imploded
+                        AggState::NotAggregated(_) | AggState::AggregatedList(_) => {
+                            ac._implode_no_agg();
+                            return Ok(ac);
+                        },
                         _ => {
                             let agg = ac.aggregated();
                             agg.as_list().into_column()
                         },
                     };
-                    AggregatedList(c.with_name(keep_name))
+                    AggState::AggregatedList(c.with_name(keep_name))
                 },
                 GroupByMethod::Groups => {
                     let mut column: ListChunked = ac.groups().as_list_chunked();
@@ -568,12 +575,12 @@ impl PartitionedAggregation for AggregationExpr {
                         let (agg_count, agg_s) =
                             unsafe { POOL.join(|| count.agg_sum(groups), || sum.agg_sum(groups)) };
 
+                        // Ensure that we don't divide by zero by masking out zeros.
                         let agg_count = agg_count.idx().unwrap();
-                        // Ensure that we don't divide by zero.
-                        let agg_count = agg_count
-                            .apply_values(|v| if v == 0 { 1 } else { v })
-                            .into_series();
-                        let agg_s = &agg_s / &agg_count;
+                        let mask = agg_count.equal(0 as IdxSize);
+                        let agg_count = agg_count.set(&mask, None).unwrap().into_series();
+
+                        let agg_s = &agg_s / &agg_count.cast(agg_s.dtype()).unwrap();
                         Ok(agg_s?.with_name(new_name).into_column())
                     },
                     _ => Ok(Column::full_null(
@@ -597,7 +604,7 @@ impl PartitionedAggregation for AggregationExpr {
                 offsets.push(length_so_far);
 
                 let mut process_group = |ca: ListChunked| -> PolarsResult<()> {
-                    let s = ca.explode()?;
+                    let s = ca.explode(false)?;
                     length_so_far += s.len() as i64;
                     offsets.push(length_so_far);
                     values.push(s.chunks()[0].clone());

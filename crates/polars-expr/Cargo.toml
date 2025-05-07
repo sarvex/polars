@@ -9,7 +9,6 @@ repository.workspace = true
 description = "Physical expression implementation of the Polars project."
 
 [dependencies]
-ahash = { workspace = true }
 arrow = { workspace = true }
 bitflags = { workspace = true }
 hashbrown = { workspace = true }
@@ -25,6 +24,7 @@ polars-time = { workspace = true, optional = true }
 polars-utils = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
+recursive = { workspace = true }
 
 [features]
 nightly = ["polars-core/nightly", "polars-plan/nightly"]

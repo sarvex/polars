@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-from collections import Counter
 from collections.abc import Generator, Mapping, Sequence
 from datetime import date, datetime, time, timedelta
 from functools import singledispatch
@@ -52,7 +51,7 @@ from polars.dependencies import (
 from polars.dependencies import numpy as np
 from polars.dependencies import pandas as pd
 from polars.dependencies import pyarrow as pa
-from polars.exceptions import DataOrientationWarning, DuplicateError, ShapeError
+from polars.exceptions import DataOrientationWarning, ShapeError
 from polars.meta import thread_pool_size
 
 with contextlib.suppress(ImportError):  # Module not available when building docs
@@ -452,6 +451,7 @@ def sequence_to_pydf(
     strict: bool = True,
     orient: Orientation | None = None,
     infer_schema_length: int | None = N_INFER_DEFAULT,
+    nan_to_null: bool = False,
 ) -> PyDataFrame:
     """Construct a PyDataFrame from a sequence."""
     if not data:
@@ -465,6 +465,7 @@ def sequence_to_pydf(
         strict=strict,
         orient=orient,
         infer_schema_length=infer_schema_length,
+        nan_to_null=nan_to_null,
     )
 
 
@@ -478,6 +479,7 @@ def _sequence_to_pydf_dispatcher(
     strict: bool = True,
     orient: Orientation | None,
     infer_schema_length: int | None,
+    nan_to_null: bool = False,
 ) -> PyDataFrame:
     # note: ONLY python-native data should participate in singledispatch registration
     # via top-level decorators, otherwise we have to import the associated module.
@@ -491,6 +493,7 @@ def _sequence_to_pydf_dispatcher(
         "strict": strict,
         "orient": orient,
         "infer_schema_length": infer_schema_length,
+        "nan_to_null": nan_to_null,
     }
     to_pydf: Callable[..., PyDataFrame]
     register_with_singledispatch = True
@@ -543,6 +546,7 @@ def _sequence_of_sequence_to_pydf(
     strict: bool,
     orient: Orientation | None,
     infer_schema_length: int | None,
+    nan_to_null: bool = False,
 ) -> PyDataFrame:
     if orient is None:
         if schema is None:
@@ -607,6 +611,7 @@ def _sequence_of_sequence_to_pydf(
                 element,
                 dtype=schema_overrides.get(column_names[i]),
                 strict=strict,
+                nan_to_null=nan_to_null,
             )._s
             for i, element in enumerate(data)
         ]
@@ -655,6 +660,7 @@ def _sequence_of_tuple_to_pydf(
     strict: bool,
     orient: Orientation | None,
     infer_schema_length: int | None,
+    nan_to_null: bool = False,
 ) -> PyDataFrame:
     # infer additional meta information if namedtuple
     if is_namedtuple(first_element.__class__) or is_sqlalchemy(first_element):
@@ -678,6 +684,7 @@ def _sequence_of_tuple_to_pydf(
         strict=strict,
         orient=orient,
         infer_schema_length=infer_schema_length,
+        nan_to_null=nan_to_null,
     )
 
 
@@ -838,7 +845,9 @@ def _sequence_of_pydantic_models_to_pydf(
 
     old_pydantic = parse_version(pydantic.__version__) < (2, 0)
     model_fields = list(
-        first_element.__fields__ if old_pydantic else first_element.model_fields
+        first_element.__fields__
+        if old_pydantic
+        else first_element.__class__.model_fields
     )
     (
         unpack_nested,
@@ -1154,7 +1163,7 @@ def arrow_to_pydf(
     try:
         if column_names != data.schema.names:
             data = data.rename_columns(column_names)
-    except pa.lib.ArrowInvalid as e:
+    except pa.ArrowInvalid as e:
         msg = "dimensions of columns arg must match data dimensions"
         raise ValueError(msg) from e
 
@@ -1166,12 +1175,6 @@ def arrow_to_pydf(
 
     # supply the arrow schema so the metadata is intact
     pydf = PyDataFrame.from_arrow_record_batches(batches, data.schema)
-
-    # arrow tables allow duplicate names; we don't
-    if len(data.columns) != pydf.width():
-        col_name, _ = Counter(column_names).most_common(1)[0]
-        msg = f"column {col_name!r} appears more than once; names must be unique"
-        raise DuplicateError(msg)
 
     if rechunk:
         pydf = pydf.rechunk()

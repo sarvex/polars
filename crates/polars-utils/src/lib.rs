@@ -28,6 +28,7 @@ pub mod mem;
 pub mod min_max;
 pub mod pl_str;
 pub mod priority;
+pub mod regex_cache;
 pub mod select;
 pub mod slice;
 pub mod slice_enum;
@@ -65,5 +66,10 @@ pub use pl_str::unique_column_name;
 #[cfg(feature = "python")]
 pub mod python_function;
 
+#[cfg(feature = "python")]
+pub mod python_convert_registry;
+
 #[cfg(feature = "serde")]
 pub mod pl_serialize;
+
+pub mod kahan_sum;

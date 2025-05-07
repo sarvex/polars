@@ -123,6 +123,26 @@ impl StructFunction {
             MultipleFields(_) => panic!("should be expanded"),
         }
     }
+
+    pub fn function_options(&self) -> FunctionOptions {
+        use StructFunction as S;
+        match self {
+            S::FieldByIndex(_) | S::FieldByName(_) => {
+                FunctionOptions::elementwise().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+            S::RenameFields(_) | S::PrefixFields(_) | S::SuffixFields(_) => {
+                FunctionOptions::elementwise()
+            },
+            #[cfg(feature = "json")]
+            S::JsonEncode => FunctionOptions::elementwise(),
+            S::WithFields => FunctionOptions::elementwise().with_flags(|f| {
+                f | FunctionFlags::INPUT_WILDCARD_EXPANSION | FunctionFlags::PASS_NAME_TO_APPLY
+            }),
+            S::MultipleFields(_) => {
+                FunctionOptions::elementwise().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
+        }
+    }
 }
 
 impl Display for StructFunction {

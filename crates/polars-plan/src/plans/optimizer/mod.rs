@@ -17,6 +17,7 @@ mod flatten_union;
 mod fused;
 mod join_utils;
 pub(crate) use join_utils::ExprOrigin;
+mod expand_datasets;
 mod predicate_pushdown;
 mod projection_pushdown;
 mod set_order;
@@ -26,7 +27,10 @@ mod slice_pushdown_lp;
 mod stack_opt;
 
 use collapse_and_project::SimpleProjectionAndCollapse;
+#[cfg(feature = "cse")]
+pub use cse::NaiveExprMerger;
 use delay_rechunk::DelayRechunk;
+pub use expand_datasets::ExpandedDataset;
 use polars_core::config::verbose;
 use polars_io::predicates::PhysicalIoExpr;
 pub use predicate_pushdown::PredicatePushDown;
@@ -168,7 +172,7 @@ More information on the new streaming engine: https://github.com/pola-rs/polars/
 
     // Should be run before predicate pushdown.
     if opt_flags.projection_pushdown() {
-        let mut projection_pushdown_opt = ProjectionPushDown::new(opt_flags.new_streaming());
+        let mut projection_pushdown_opt = ProjectionPushDown::new();
         let alp = lp_arena.take(lp_top);
         let alp = projection_pushdown_opt.optimize(alp, lp_arena, expr_arena)?;
         lp_arena.replace(lp_top, alp);
@@ -193,7 +197,7 @@ More information on the new streaming engine: https://github.com/pola-rs/polars/
 
     // Make sure it is after predicate pushdown
     if opt_flags.collapse_joins() && get_or_init_members!().has_filter_with_join_input {
-        collapse_joins::optimize(lp_top, lp_arena, expr_arena);
+        collapse_joins::optimize(lp_top, lp_arena, expr_arena, opt_flags.new_streaming());
     }
 
     // Make sure its before slice pushdown.
@@ -227,6 +231,9 @@ More information on the new streaming engine: https://github.com/pola-rs/polars/
     if !opt_flags.eager() {
         rules.push(Box::new(FlattenUnionRule {}));
     }
+
+    // Note: ExpandDatasets must run after slice and predicate pushdown.
+    rules.push(Box::new(expand_datasets::ExpandDatasets {}) as Box<dyn OptimizationRule>);
 
     lp_top = opt.optimize_loop(&mut rules, expr_arena, lp_arena, lp_top)?;
 

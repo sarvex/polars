@@ -61,6 +61,9 @@ def test_concat_list_in_agg_6397() -> None:
     df = pl.DataFrame({"group": [1, 2, 2, 3], "value": ["a", "b", "c", "d"]})
 
     # single list
+    # TODO: this shouldn't be allowed and raise
+    # Currently this do a cast to list in the expression and
+    # therefore leads to different nesting
     assert df.group_by("group").agg(
         [
             # this casts every element to a list
@@ -78,7 +81,7 @@ def test_concat_list_in_agg_6397() -> None:
         ]
     ).sort("group").to_dict(as_series=False) == {
         "group": [1, 2, 3],
-        "result": [[["a"]], [["b", "c"]], [["d"]]],
+        "result": [["a"], ["b", "c"], ["d"]],
     }
 
 
@@ -182,8 +185,8 @@ def test_cross_join_concat_list_18587() -> None:
     lf3 = lf.select(pl.struct(pl.all()).alias("3"))
 
     result = (
-        lf1.join(lf2, how="cross")
-        .join(lf3, how="cross")
+        lf1.join(lf2, how="cross", maintain_order="left_right")
+        .join(lf3, how="cross", maintain_order="left_right")
         .select(pl.concat_list("1", "2", "3"))
         .collect()
     )

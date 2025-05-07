@@ -49,7 +49,7 @@ def test_group_by() -> None:
     )
 
     # check if this query runs and thus column names propagate
-    df.group_by("b").agg(pl.col("c").forward_fill()).explode("c")
+    df.group_by("b").agg(pl.col("c").fill_null(strategy="forward")).explode("c")
 
     # get a specific column
     result = df.group_by("b", maintain_order=True).agg(pl.count("a"))
@@ -911,6 +911,17 @@ def test_partitioned_group_by_14954(monkeypatch: Any) -> None:
     }
 
 
+def test_partitioned_group_by_nulls_mean_21838() -> None:
+    size = 10
+    a = [1 for i in range(size)] + [2 for i in range(size)] + [3 for i in range(size)]
+    b = [1 for i in range(size)] + [None for i in range(size * 2)]
+    df = pl.DataFrame({"a": a, "b": b})
+    assert df.group_by("a").mean().sort("a").to_dict(as_series=False) == {
+        "a": [1, 2, 3],
+        "b": [1.0, None, None],
+    }
+
+
 def test_aggregated_scalar_elementwise_15602() -> None:
     df = pl.DataFrame({"group": [1, 2, 1]})
 
@@ -1217,4 +1228,78 @@ def test_enum_perfect_group_by_21360() -> None:
                 pl.Series("len", [1], get_index_type()),
             ]
         ),
+    )
+
+
+def test_partitioned_group_by_21634(partition_limit: int) -> None:
+    n = partition_limit
+    df = pl.DataFrame({"grp": [1] * n, "x": [1] * n})
+    assert df.group_by("grp", True).agg().to_dict(as_series=False) == {
+        "grp": [1],
+        "literal": [True],
+    }
+
+
+def test_group_by_cse_dup_key_alias_22238() -> None:
+    df = pl.LazyFrame({"a": [1, 1, 2, 2, -1], "x": [0, 1, 2, 3, 10]})
+    result = df.group_by(
+        pl.col("a").abs(),
+        pl.col("a").abs().alias("a_with_alias"),
+    ).agg(pl.col("x").sum())
+    assert_frame_equal(
+        result.collect(),
+        pl.DataFrame({"a": [1, 2], "a_with_alias": [1, 2], "x": [11, 5]}),
+        check_row_order=False,
+    )
+
+
+def test_group_by_22328() -> None:
+    N = 20
+
+    df1 = pl.select(
+        x=pl.repeat(1, N // 2).append(pl.repeat(2, N // 2)).shuffle(),
+        y=pl.lit(3.0, pl.Float32),
+    ).lazy()
+
+    df2 = pl.select(x=pl.repeat(4, N)).lazy()
+
+    assert (
+        df2.join(df1.group_by("x").mean().with_columns(z="y"), how="left", on="x")
+        .with_columns(pl.col("z").fill_null(0))
+        .collect()
+    ).shape == (20, 3)
+
+
+@pytest.mark.parametrize("maintain_order", [False, True])
+def test_group_by_arrays_22574(maintain_order: bool) -> None:
+    assert_frame_equal(
+        pl.Series("a", [[1], [2], [2]], pl.Array(pl.Int64, 1))
+        .to_frame()
+        .group_by("a", maintain_order=maintain_order)
+        .agg(pl.len()),
+        pl.DataFrame(
+            [
+                pl.Series("a", [[1], [2]], pl.Array(pl.Int64, 1)),
+                pl.Series("len", [1, 2], pl.get_index_type()),
+            ]
+        ),
+        check_row_order=maintain_order,
+    )
+
+    assert_frame_equal(
+        pl.Series(
+            "a", [[[1, 2]], [[2, 3]], [[2, 3]]], pl.Array(pl.Array(pl.Int64, 2), 1)
+        )
+        .to_frame()
+        .group_by("a", maintain_order=maintain_order)
+        .agg(pl.len()),
+        pl.DataFrame(
+            [
+                pl.Series(
+                    "a", [[[1, 2]], [[2, 3]]], pl.Array(pl.Array(pl.Int64, 2), 1)
+                ),
+                pl.Series("len", [1, 2], pl.get_index_type()),
+            ]
+        ),
+        check_row_order=maintain_order,
     )

@@ -1,8 +1,6 @@
 #[cfg(feature = "timezones")]
 use chrono_tz::Tz;
 #[cfg(feature = "timezones")]
-use polars_core::chunked_array::temporal::validate_time_zone;
-#[cfg(feature = "timezones")]
 use polars_time::base_utc_offset as base_utc_offset_fn;
 #[cfg(feature = "timezones")]
 use polars_time::dst_offset as dst_offset_fn;
@@ -137,6 +135,63 @@ impl TemporalFunction {
                     polars_bail!(ComputeError: "expected Date or Datetime, got {}", dtype)
                 },
             }),
+        }
+    }
+
+    pub fn function_options(&self) -> FunctionOptions {
+        use TemporalFunction as T;
+        match self {
+            T::Millennium
+            | T::Century
+            | T::Year
+            | T::IsLeapYear
+            | T::IsoYear
+            | T::Quarter
+            | T::Month
+            | T::Week
+            | T::WeekDay
+            | T::Day
+            | T::OrdinalDay
+            | T::Time
+            | T::Date
+            | T::Datetime
+            | T::Hour
+            | T::Minute
+            | T::Second
+            | T::Millisecond
+            | T::Microsecond
+            | T::Nanosecond
+            | T::TotalDays
+            | T::TotalHours
+            | T::TotalMinutes
+            | T::TotalSeconds
+            | T::TotalMilliseconds
+            | T::TotalMicroseconds
+            | T::TotalNanoseconds
+            | T::ToString(_)
+            | T::TimeStamp(_)
+            | T::CastTimeUnit(_)
+            | T::WithTimeUnit(_) => FunctionOptions::elementwise(),
+            #[cfg(feature = "timezones")]
+            T::ConvertTimeZone(_) => FunctionOptions::elementwise(),
+            #[cfg(feature = "month_start")]
+            T::MonthStart => FunctionOptions::elementwise(),
+            #[cfg(feature = "month_end")]
+            T::MonthEnd => FunctionOptions::elementwise(),
+            #[cfg(feature = "timezones")]
+            T::BaseUtcOffset | T::DSTOffset => FunctionOptions::elementwise(),
+            T::Truncate => FunctionOptions::elementwise(),
+            #[cfg(feature = "offset_by")]
+            T::OffsetBy => FunctionOptions::elementwise(),
+            T::Round => FunctionOptions::elementwise(),
+            T::Replace => FunctionOptions::elementwise(),
+            T::Duration(_) => FunctionOptions::elementwise(),
+            #[cfg(feature = "timezones")]
+            T::ReplaceTimeZone(_, _) => FunctionOptions::elementwise(),
+            T::Combine(_) => FunctionOptions::elementwise(),
+            T::DatetimeFunction { .. } => {
+                FunctionOptions::elementwise().with_flags(|f| f | FunctionFlags::ALLOW_RENAME)
+            },
         }
     }
 }
@@ -403,7 +458,6 @@ pub(super) fn convert_time_zone(s: &Column, time_zone: &TimeZone) -> PolarsResul
     match s.dtype() {
         DataType::Datetime(_, _) => {
             let mut ca = s.datetime()?.clone();
-            validate_time_zone(time_zone)?;
             ca.set_time_zone(time_zone.clone())?;
             Ok(ca.into_column())
         },

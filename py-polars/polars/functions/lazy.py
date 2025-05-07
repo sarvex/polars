@@ -8,9 +8,9 @@ import polars._reexport as pl
 import polars.functions as F
 from polars._utils.async_ import _AioDataFrameResult, _GeventDataFrameResult
 from polars._utils.deprecation import (
-    deprecate_function,
     deprecate_renamed_parameter,
     deprecate_streaming_parameter,
+    deprecated,
     issue_deprecation_warning,
 )
 from polars._utils.parse import (
@@ -18,7 +18,7 @@ from polars._utils.parse import (
     parse_into_list_of_expressions,
 )
 from polars._utils.unstable import issue_unstable_warning, unstable
-from polars._utils.various import extend_bool
+from polars._utils.various import extend_bool, qualified_type_name
 from polars._utils.wrap import wrap_df, wrap_expr
 from polars.datatypes import DTYPE_TEMPORAL_UNITS, Date, Datetime, Int64
 from polars.lazyframe.opt_flags import OptFlags
@@ -27,6 +27,7 @@ with contextlib.suppress(ImportError):  # Module not available when building doc
     import polars.polars as plr
 
 if TYPE_CHECKING:
+    import sys
     from collections.abc import Awaitable, Collection, Iterable
     from typing import Literal
 
@@ -37,8 +38,13 @@ if TYPE_CHECKING:
         EpochTimeUnit,
         IntoExpr,
         PolarsDataType,
-        RollingInterpolationMethod,
+        QuantileMethod,
     )
+
+    if sys.version_info >= (3, 13):
+        from warnings import deprecated
+    else:
+        from typing_extensions import deprecated  # noqa: TC004
 
 
 def field(name: str | list[str]) -> Expr:
@@ -783,6 +789,30 @@ def tail(column: str, n: int = 10) -> Expr:
     return F.col(column).tail(n)
 
 
+@overload
+def corr(
+    a: IntoExpr,
+    b: IntoExpr,
+    *,
+    method: CorrelationMethod = ...,
+    ddof: int | None = ...,
+    propagate_nans: bool = ...,
+    eager: Literal[False] = ...,
+) -> Expr: ...
+
+
+@overload
+def corr(
+    a: IntoExpr,
+    b: IntoExpr,
+    *,
+    method: CorrelationMethod = ...,
+    ddof: int | None = ...,
+    propagate_nans: bool = ...,
+    eager: Literal[True],
+) -> Series: ...
+
+
 def corr(
     a: IntoExpr,
     b: IntoExpr,
@@ -790,7 +820,8 @@ def corr(
     method: CorrelationMethod = "pearson",
     ddof: int | None = None,
     propagate_nans: bool = False,
-) -> Expr:
+    eager: bool = False,
+) -> Expr | Series:
     """
     Compute the Pearson's or Spearman rank correlation between two columns.
 
@@ -811,6 +842,10 @@ def corr(
         If `True` any `NaN` encountered will lead to `NaN` in the output.
         Defaults to `False` where `NaN` are regarded as larger than any finite number
         and thus lead to the highest rank.
+    eager
+        Evaluate immediately and return a `Series`; this requires that at least one
+        of the given arguments is a `Series`. If set to `False` (default), return
+        an expression instead.
 
     Examples
     --------
@@ -835,13 +870,6 @@ def corr(
 
     Spearman rank correlation:
 
-    >>> df = pl.DataFrame(
-    ...     {
-    ...         "a": [1, 8, 3],
-    ...         "b": [4, 5, 2],
-    ...         "c": ["foo", "bar", "foo"],
-    ...     }
-    ... )
     >>> df.select(pl.corr("a", "b", method="spearman"))
     shape: (1, 1)
     ┌─────┐
@@ -851,26 +879,80 @@ def corr(
     ╞═════╡
     │ 0.5 │
     └─────┘
+
+    Eager evaluation:
+
+    >>> s1 = pl.Series("a", [1, 8, 3])
+    >>> s2 = pl.Series("b", [4, 5, 2])
+    >>> pl.corr(s1, s2, eager=True)
+    shape: (1,)
+    Series: 'a' [f64]
+    [
+        0.544705
+    ]
+    >>> pl.corr(s1, s2, method="spearman", eager=True)
+    shape: (1,)
+    Series: 'a' [f64]
+    [
+        0.5
+    ]
     """
     if ddof is not None:
         issue_deprecation_warning(
-            "The `ddof` parameter has no effect. Do not use it.",
+            "the `ddof` parameter has no effect. Do not use it.",
             version="1.17.0",
         )
 
-    a = parse_into_expression(a)
-    b = parse_into_expression(b)
+    if eager:
+        if not (isinstance(a, pl.Series) or isinstance(b, pl.Series)):
+            msg = "expected at least one Series in 'corr' inputs if 'eager=True'"
+            raise ValueError(msg)
 
-    if method == "pearson":
-        return wrap_expr(plr.pearson_corr(a, b))
-    elif method == "spearman":
-        return wrap_expr(plr.spearman_rank_corr(a, b, propagate_nans))
+        frame = pl.DataFrame([e for e in (a, b) if isinstance(e, pl.Series)])
+        exprs = ((e.name if isinstance(e, pl.Series) else e) for e in (a, b))
+        return frame.select(
+            corr(*exprs, eager=False, method=method, propagate_nans=propagate_nans)
+        ).to_series()
     else:
-        msg = f"method must be one of {{'pearson', 'spearman'}}, got {method!r}"
-        raise ValueError(msg)
+        a = parse_into_expression(a)
+        b = parse_into_expression(b)
+
+        if method == "pearson":
+            return wrap_expr(plr.pearson_corr(a, b))
+        elif method == "spearman":
+            return wrap_expr(plr.spearman_rank_corr(a, b, propagate_nans))
+        else:
+            msg = f"method must be one of {{'pearson', 'spearman'}}, got {method!r}"
+            raise ValueError(msg)
 
 
-def cov(a: IntoExpr, b: IntoExpr, ddof: int = 1) -> Expr:
+@overload
+def cov(
+    a: IntoExpr,
+    b: IntoExpr,
+    *,
+    ddof: int = ...,
+    eager: Literal[False] = ...,
+) -> Expr: ...
+
+
+@overload
+def cov(
+    a: IntoExpr,
+    b: IntoExpr,
+    *,
+    ddof: int = ...,
+    eager: Literal[True],
+) -> Series: ...
+
+
+def cov(
+    a: IntoExpr,
+    b: IntoExpr,
+    *,
+    ddof: int = 1,
+    eager: bool = False,
+) -> Expr | Series:
     """
     Compute the covariance between two columns/ expressions.
 
@@ -884,6 +966,10 @@ def cov(a: IntoExpr, b: IntoExpr, ddof: int = 1) -> Expr:
         "Delta Degrees of Freedom": the divisor used in the calculation is N - ddof,
         where N represents the number of elements.
         By default ddof is 1.
+    eager
+        Evaluate immediately and return a `Series`; this requires that at least one
+        of the given arguments is a `Series`. If set to `False` (default), return
+        an expression instead.
 
     Examples
     --------
@@ -894,19 +980,43 @@ def cov(a: IntoExpr, b: IntoExpr, ddof: int = 1) -> Expr:
     ...         "c": ["foo", "bar", "foo"],
     ...     },
     ... )
-    >>> df.select(pl.cov("a", "b"))
-    shape: (1, 1)
-    ┌─────┐
-    │ a   │
-    │ --- │
-    │ f64 │
-    ╞═════╡
-    │ 3.0 │
-    └─────┘
+
+    >>> df.select(
+    ...     x=pl.cov("a", "b"),
+    ...     y=pl.cov("a", "b", ddof=2),
+    ... )
+    shape: (1, 2)
+    ┌─────┬─────┐
+    │ x   ┆ y   │
+    │ --- ┆ --- │
+    │ f64 ┆ f64 │
+    ╞═════╪═════╡
+    │ 3.0 ┆ 6.0 │
+    └─────┴─────┘
+
+    Eager evaluation:
+
+    >>> s1 = pl.Series("a", [1, 8, 3])
+    >>> s2 = pl.Series("b", [4, 5, 2])
+    >>> pl.cov(s1, s2, eager=True)
+    shape: (1,)
+    Series: 'a' [f64]
+    [
+        3.0
+    ]
     """
-    a = parse_into_expression(a)
-    b = parse_into_expression(b)
-    return wrap_expr(plr.cov(a, b, ddof))
+    if eager:
+        if not (isinstance(a, pl.Series) or isinstance(b, pl.Series)):
+            msg = "expected at least one Series in 'cov' inputs if 'eager=True'"
+            raise ValueError(msg)
+
+        frame = pl.DataFrame([e for e in (a, b) if isinstance(e, pl.Series)])
+        exprs = ((e.name if isinstance(e, pl.Series) else e) for e in (a, b))
+        return frame.select(cov(*exprs, eager=False, ddof=ddof)).to_series()
+    else:
+        a = parse_into_expression(a)
+        b = parse_into_expression(b)
+        return wrap_expr(plr.cov(a, b, ddof))
 
 
 def map_batches(
@@ -976,7 +1086,7 @@ def map_groups(
     function: Callable[[Sequence[Series]], Series | Any],
     return_dtype: PolarsDataType | None = None,
     *,
-    returns_scalar: bool = True,
+    returns_scalar: bool = False,
 ) -> Expr:
     """
     Apply a custom/user-defined function (UDF) in a GroupBy context.
@@ -1064,6 +1174,9 @@ def fold(
     acc: IntoExpr,
     function: Callable[[Series, Series], Series],
     exprs: Sequence[Expr | str] | Expr,
+    *,
+    returns_scalar: bool = False,
+    return_dtype: PolarsDataType | None = None,
 ) -> Expr:
     """
     Accumulate over multiple columns horizontally/ row wise with a left fold.
@@ -1078,6 +1191,13 @@ def fold(
         Fn(acc, value) -> new_value
     exprs
         Expressions to aggregate over. May also be a wildcard expression.
+    returns_scalar
+        Whether or not `function` applied returns a scalar. This must be set correctly
+        by the user.
+    return_dtype
+            Output datatype.
+            If not set, the dtype will be inferred based on the dtype
+            of the accumulator.
 
     Notes
     -----
@@ -1165,7 +1285,15 @@ def fold(
         exprs = [exprs]
 
     exprs = parse_into_list_of_expressions(exprs)
-    return wrap_expr(plr.fold(acc, function, exprs))
+    return wrap_expr(
+        plr.fold(
+            acc,
+            function,
+            exprs,
+            returns_scalar=returns_scalar,
+            return_dtype=return_dtype,
+        )
+    )
 
 
 def reduce(
@@ -1223,7 +1351,6 @@ def reduce(
     │ 5   │
     └─────┘
     """
-    # in case of col("*")
     if isinstance(exprs, pl.Expr):
         exprs = [exprs]
 
@@ -1379,10 +1506,17 @@ def arctan2(y: str | Expr, x: str | Expr) -> Expr:
         y = F.col(y)
     if isinstance(x, str):
         x = F.col(x)
+    if not hasattr(x, "_pyexpr"):
+        msg = f"`arctan2` expected a `str` or `Expr` got a `{qualified_type_name(x)}`"
+        raise TypeError(msg)
+    if not hasattr(y, "_pyexpr"):
+        msg = f"`arctan2` expected a `str` or `Expr` got a `{qualified_type_name(y)}`"
+        raise TypeError(msg)
+
     return wrap_expr(plr.arctan2(y._pyexpr, x._pyexpr))
 
 
-@deprecate_function("Use `arctan2` followed by `.degrees()` instead.", version="1.0.0")
+@deprecated("`arctan2d` is deprecated; use `arctan2` followed by `.degrees()` instead.")
 def arctan2d(y: str | Expr, x: str | Expr) -> Expr:
     """
     Compute two argument arctan in degrees.
@@ -1509,7 +1643,7 @@ def groups(column: str) -> Expr:
 def quantile(
     column: str,
     quantile: float | Expr,
-    interpolation: RollingInterpolationMethod = "nearest",
+    interpolation: QuantileMethod = "nearest",
 ) -> Expr:
     """
     Syntactic sugar for `pl.col("foo").quantile(..)`.
@@ -1520,7 +1654,7 @@ def quantile(
         Column name.
     quantile
         Quantile between 0.0 and 1.0.
-    interpolation : {'nearest', 'higher', 'lower', 'midpoint', 'linear'}
+    interpolation : {'nearest', 'higher', 'lower', 'midpoint', 'linear', 'equiprobable'}
         Interpolation method.
     """
     return F.col(column).quantile(quantile, interpolation)
@@ -1708,7 +1842,7 @@ def collect_all(
         optflags.no_optimizations()
 
     if engine in ("streaming", "old-streaming"):
-        issue_unstable_warning("Streaming mode is considered unstable.")
+        issue_unstable_warning("streaming mode is considered unstable.")
 
     lfs = [lf._ldf for lf in lazy_frames]
     out = plr.collect_all(lfs, engine, optflags._pyoptflags)
@@ -1866,7 +2000,7 @@ def collect_all_async(
         optflags.no_optimizations()
 
     if engine in ("streaming", "old-streaming"):
-        issue_unstable_warning("Streaming mode is considered unstable.")
+        issue_unstable_warning("streaming mode is considered unstable.")
 
     result: (
         _GeventDataFrameResult[list[DataFrame]] | _AioDataFrameResult[list[DataFrame]]
@@ -2036,10 +2170,6 @@ def arg_where(condition: Expr | Series, *, eager: Literal[False] = ...) -> Expr:
 def arg_where(condition: Expr | Series, *, eager: Literal[True]) -> Series: ...
 
 
-@overload
-def arg_where(condition: Expr | Series, *, eager: bool) -> Expr | Series: ...
-
-
 def arg_where(condition: Expr | Series, *, eager: bool = False) -> Expr | Series:
     """
     Return indices where `condition` evaluates `True`.
@@ -2049,8 +2179,9 @@ def arg_where(condition: Expr | Series, *, eager: bool = False) -> Expr | Series
     condition
         Boolean expression to evaluate
     eager
-        Evaluate immediately and return a `Series`. If set to `False` (default),
-        return an expression instead.
+        Evaluate immediately and return a `Series`; this requires that the given
+        condition is itself a `Series`. If set to `False` (default), return
+        an expression instead.
 
     See Also
     --------
@@ -2074,7 +2205,7 @@ def arg_where(condition: Expr | Series, *, eager: bool = False) -> Expr | Series
     if eager:
         if not isinstance(condition, pl.Series):
             msg = (
-                "expected 'Series' in 'arg_where' if 'eager=True', got"
+                "expected Series in 'arg_where' if 'eager=True', got"
                 f" {type(condition).__name__!r}"
             )
             raise ValueError(msg)
@@ -2084,7 +2215,35 @@ def arg_where(condition: Expr | Series, *, eager: bool = False) -> Expr | Series
         return wrap_expr(plr.arg_where(condition))
 
 
-def coalesce(exprs: IntoExpr | Iterable[IntoExpr], *more_exprs: IntoExpr) -> Expr:
+@overload
+def coalesce(
+    exprs: IntoExpr | Iterable[IntoExpr],
+    *more_exprs: IntoExpr,
+    eager: Literal[False] = ...,
+) -> Expr: ...
+
+
+@overload
+def coalesce(
+    exprs: IntoExpr | Iterable[IntoExpr],
+    *more_exprs: IntoExpr,
+    eager: Literal[True],
+) -> Series: ...
+
+
+@overload
+def coalesce(
+    exprs: IntoExpr | Iterable[IntoExpr],
+    *more_exprs: IntoExpr,
+    eager: bool,
+) -> Expr | Series: ...
+
+
+def coalesce(
+    exprs: IntoExpr | Iterable[IntoExpr],
+    *more_exprs: IntoExpr,
+    eager: bool = False,
+) -> Expr | Series:
     """
     Folds the columns from left to right, keeping the first non-null value.
 
@@ -2095,6 +2254,10 @@ def coalesce(exprs: IntoExpr | Iterable[IntoExpr], *more_exprs: IntoExpr) -> Exp
         names, other non-expression inputs are parsed as literals.
     *more_exprs
         Additional columns to coalesce, specified as positional arguments.
+    eager
+        Evaluate immediately and return a `Series`; this requires that at least one
+        of the given arguments is a `Series`. If set to `False` (default), return
+        an expression instead.
 
     Examples
     --------
@@ -2105,7 +2268,8 @@ def coalesce(exprs: IntoExpr | Iterable[IntoExpr], *more_exprs: IntoExpr) -> Exp
     ...         "c": [5, None, 3, None],
     ...     }
     ... )
-    >>> df.with_columns(pl.coalesce(["a", "b", "c", 10]).alias("d"))
+
+    >>> df.with_columns(pl.coalesce("a", "b", "c", 10).alias("d"))
     shape: (4, 4)
     ┌──────┬──────┬──────┬─────┐
     │ a    ┆ b    ┆ c    ┆ d   │
@@ -2117,6 +2281,7 @@ def coalesce(exprs: IntoExpr | Iterable[IntoExpr], *more_exprs: IntoExpr) -> Exp
     │ null ┆ null ┆ 3    ┆ 3   │
     │ null ┆ null ┆ null ┆ 10  │
     └──────┴──────┴──────┴─────┘
+
     >>> df.with_columns(pl.coalesce(pl.col(["a", "b", "c"]), 10.0).alias("d"))
     shape: (4, 4)
     ┌──────┬──────┬──────┬──────┐
@@ -2129,9 +2294,29 @@ def coalesce(exprs: IntoExpr | Iterable[IntoExpr], *more_exprs: IntoExpr) -> Exp
     │ null ┆ null ┆ 3    ┆ 3.0  │
     │ null ┆ null ┆ null ┆ 10.0 │
     └──────┴──────┴──────┴──────┘
+
+    >>> s1 = pl.Series("a", [None, 2, None])
+    >>> s2 = pl.Series("b", [1, None, 3])
+    >>> pl.coalesce(s1, s2, eager=True)
+    shape: (3,)
+    Series: 'a' [i64]
+    [
+        1
+        2
+        3
+    ]
     """
-    exprs = parse_into_list_of_expressions(exprs, *more_exprs)
-    return wrap_expr(plr.coalesce(exprs))
+    if eager:
+        exprs = [exprs, *more_exprs]
+        if not (series := [e for e in exprs if isinstance(e, pl.Series)]):
+            msg = "expected at least one Series in 'coalesce' if 'eager=True'"
+            raise ValueError(msg)
+
+        exprs = [(e.name if isinstance(e, pl.Series) else e) for e in exprs]
+        return pl.DataFrame(series).select(coalesce(exprs, eager=False)).to_series()
+    else:
+        exprs = parse_into_list_of_expressions(exprs, *more_exprs)
+        return wrap_expr(plr.coalesce(exprs))
 
 
 @overload
@@ -2221,6 +2406,9 @@ def rolling_cov(
     The window at a given row includes the row itself and the
     `window_size - 1` elements before it.
 
+    .. versionchanged:: 1.21.0
+        The `min_periods` parameter was renamed `min_samples`.
+
     Parameters
     ----------
     a
@@ -2261,6 +2449,9 @@ def rolling_corr(
 
     The window at a given row includes the row itself and the
     `window_size - 1` elements before it.
+
+    .. versionchanged:: 1.21.0
+        The `min_periods` parameter was renamed `min_samples`.
 
     Parameters
     ----------

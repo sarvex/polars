@@ -109,8 +109,8 @@ fn expand_regex(
     pattern: &str,
     exclude: &PlHashSet<PlSmallStr>,
 ) -> PolarsResult<()> {
-    let re =
-        regex::Regex::new(pattern).map_err(|e| polars_err!(ComputeError: "invalid regex {}", e))?;
+    let re = polars_utils::regex_cache::compile_regex(pattern)
+        .map_err(|e| polars_err!(ComputeError: "invalid regex {}", e))?;
     for name in schema.iter_names() {
         if re.is_match(name) && !exclude.contains(name.as_str()) {
             let mut new_expr = remove_exclude(expr.clone());
@@ -253,8 +253,10 @@ fn dtypes_match(d1: &DataType, d2: &DataType) -> bool {
         (DataType::Datetime(tu_l, tz_l), DataType::Datetime(tu_r, tz_r)) => {
             tu_l == tu_r
                 && (tz_l == tz_r
-                    || tz_r.is_some() && (tz_l.as_deref().unwrap_or("") == "*")
-                    || tz_l.is_some() && (tz_r.as_deref().unwrap_or("") == "*"))
+                    || match (tz_l, tz_r) {
+                        (Some(l), Some(r)) => TimeZone::eq_wildcard_aware(l, r),
+                        _ => false,
+                    })
         },
         // ...but otherwise require exact match
         _ => d1 == d2,
@@ -395,7 +397,7 @@ Hint: set 'upper_bound' for 'list.to_struct'.",
         else {
             #[cfg(feature = "regex")]
             {
-                let re = regex::Regex::new(first_name)
+                let re = polars_utils::regex_cache::compile_regex(first_name)
                     .map_err(|e| polars_err!(ComputeError: "invalid regex {}", e))?;
 
                 fields
@@ -565,7 +567,9 @@ fn expand_function_inputs(
             *input = rewrite_projections(core::mem::take(input), schema, &[], opt_flags)?;
             if input.is_empty() && !options.flags.contains(FunctionFlags::ALLOW_EMPTY_INPUTS) {
                 // Needed to visualize the error
-                *input = vec![Expr::Literal(LiteralValue::Null)];
+                *input = vec![Expr::Literal(LiteralValue::Scalar(Scalar::null(
+                    DataType::Null,
+                )))];
                 polars_bail!(InvalidOperation: "expected at least 1 input in {}", e)
             }
             Ok(e)

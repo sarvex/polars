@@ -2,8 +2,6 @@ use std::fmt;
 
 use polars_core::error::*;
 use polars_utils::{format_list_container_truncated, format_list_truncated};
-#[cfg(feature = "regex")]
-use regex::Regex;
 
 use crate::constants;
 use crate::plans::ir::IRPlanRef;
@@ -26,13 +24,20 @@ pub struct TreeFmtAExpr<'a>(&'a AExpr);
 impl fmt::Display for TreeFmtAExpr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self.0 {
-            AExpr::Explode(_) => "explode",
+            AExpr::Explode {
+                expr: _,
+                skip_empty: false,
+            } => "explode",
+            AExpr::Explode {
+                expr: _,
+                skip_empty: true,
+            } => "explode(skip_empty)",
             AExpr::Alias(_, name) => return write!(f, "alias({})", name),
             AExpr::Column(name) => return write!(f, "col({})", name),
             AExpr::Literal(lv) => return write!(f, "lit({lv:?})"),
             AExpr::BinaryExpr { op, .. } => return write!(f, "binary: {}", op),
             AExpr::Cast { dtype, options, .. } => {
-                return if options.strict() {
+                return if options.is_strict() {
                     write!(f, "strict cast({})", dtype)
                 } else {
                     write!(f, "cast({})", dtype)
@@ -93,8 +98,10 @@ fn with_header(header: &Option<String>, text: &str) -> String {
 
 #[cfg(feature = "regex")]
 fn multiline_expression(expr: &str) -> std::borrow::Cow<'_, str> {
-    let re = Regex::new(r"([\)\]])(\.[a-z0-9]+\()").unwrap();
-    re.replace_all(expr, "$1\n  $2")
+    polars_utils::regex_cache::cached_regex! {
+        static RE = r"([\)\]])(\.[a-z0-9]+\()";
+    }
+    RE.replace_all(expr, "$1\n  $2")
 }
 
 impl<'a> TreeFmtNode<'a> {
@@ -279,9 +286,16 @@ impl<'a> TreeFmtNode<'a> {
                             .collect(),
                     ),
                     GroupBy {
-                        input, keys, aggs, ..
+                        input,
+                        keys,
+                        aggs,
+                        maintain_order,
+                        ..
                     } => ND(
-                        wh(h, "AGGREGATE"),
+                        wh(
+                            h,
+                            &format!("AGGREGATE[maintain_order: {}]", *maintain_order),
+                        ),
                         aggs.iter()
                             .map(|expr| self.expr_node(Some("expression:".to_string()), expr))
                             .chain(keys.iter().map(|expr| {

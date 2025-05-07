@@ -5,7 +5,6 @@ use std::sync::{Arc, LazyLock};
 use polars_core::config;
 use polars_core::error::{PolarsError, PolarsResult, polars_bail, to_compute_err};
 use polars_utils::pl_str::PlSmallStr;
-use regex::Regex;
 
 #[cfg(feature = "cloud")]
 mod hugging_face;
@@ -137,8 +136,9 @@ pub fn resolve_homedir(path: &dyn AsRef<Path>) -> PathBuf {
     path.into()
 }
 
-static CLOUD_URL: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^(s3a?|gs|gcs|file|abfss?|azure|az|adl|https?|hf)://").unwrap());
+polars_utils::regex_cache::cached_regex! {
+    static CLOUD_URL = r"^(s3a?|gs|gcs|file|abfss?|azure|az|adl|https?|hf)://";
+}
 
 /// Check if the path is a cloud url.
 pub fn is_cloud_url<P: AsRef<Path>>(p: P) -> bool {
@@ -366,7 +366,7 @@ pub fn expand_paths_hive(
 
                                 async {
                                     let store = st;
-                                    store
+                                    let out = store
                                         .list(Some(&prefix))
                                         .try_filter_map(|x| async move {
                                             let out = (x.size > 0).then(|| {
@@ -381,8 +381,9 @@ pub fn expand_paths_hive(
                                             Ok(out)
                                         })
                                         .try_collect::<Vec<_>>()
-                                        .await
-                                        .map_err(to_compute_err)
+                                        .await?;
+
+                                    Ok(out)
                                 }
                             })
                             .await?;

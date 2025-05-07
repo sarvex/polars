@@ -69,14 +69,18 @@ impl PrivateSeries for SeriesWrap<StructChunked> {
         self.0.agg_list(groups)
     }
 
-    fn vec_hash(&self, build_hasher: PlRandomState, buf: &mut Vec<u64>) -> PolarsResult<()> {
+    fn vec_hash(
+        &self,
+        build_hasher: PlSeedableRandomStateQuality,
+        buf: &mut Vec<u64>,
+    ) -> PolarsResult<()> {
         let mut fields = self.0.fields_as_series().into_iter();
 
         if let Some(s) = fields.next() {
-            s.vec_hash(build_hasher.clone(), buf)?
+            s.vec_hash(build_hasher, buf)?
         };
         for s in fields {
-            s.vec_hash_combine(build_hasher.clone(), buf)?
+            s.vec_hash_combine(build_hasher, buf)?
         }
         Ok(())
     }
@@ -156,6 +160,16 @@ impl SeriesTrait for SeriesWrap<StructChunked> {
 
     fn new_from_index(&self, _index: usize, _length: usize) -> Series {
         self.0.new_from_index(_index, _length).into_series()
+    }
+
+    fn trim_lists_to_normalized_offsets(&self) -> Option<Series> {
+        self.0
+            .trim_lists_to_normalized_offsets()
+            .map(IntoSeries::into_series)
+    }
+
+    fn propagate_nulls(&self) -> Option<Series> {
+        self.0.propagate_nulls().map(IntoSeries::into_series)
     }
 
     fn cast(&self, dtype: &DataType, cast_options: CastOptions) -> PolarsResult<Series> {
@@ -256,6 +270,10 @@ impl SeriesTrait for SeriesWrap<StructChunked> {
 
     fn clone_inner(&self) -> Arc<dyn SeriesTrait> {
         Arc::new(SeriesWrap(Clone::clone(&self.0)))
+    }
+
+    fn find_validity_mismatch(&self, other: &Series, idxs: &mut Vec<IdxSize>) {
+        self.0.find_validity_mismatch(other, idxs)
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -6,9 +6,11 @@ use polars::prelude::*;
 use polars_core::chunked_array::object::builder::ObjectChunkedBuilder;
 use polars_core::chunked_array::object::registry::AnonymousObjectBuilder;
 use polars_core::chunked_array::object::{registry, set_polars_allow_extension};
-use polars_core::error::PolarsError::ComputeError;
 use polars_error::PolarsWarning;
 use polars_error::signals::register_polars_keyboard_interrupt_hook;
+use polars_ffi::version_0::SeriesExport;
+use polars_plan::plans::python_df_to_rust;
+use polars_utils::python_convert_registry::{FromPythonConvertRegistry, PythonConvertRegistry};
 use pyo3::prelude::*;
 use pyo3::{IntoPyObjectExt, intern};
 
@@ -16,30 +18,52 @@ use crate::Wrap;
 use crate::dataframe::PyDataFrame;
 use crate::map::lazy::{ToSeries, call_lambda_with_series};
 use crate::prelude::ObjectValue;
-use crate::py_modules::{pl_utils, polars};
+use crate::py_modules::{pl_df, pl_utils, polars, polars_rs};
 
 fn python_function_caller_series(s: Column, lambda: &PyObject) -> PolarsResult<Column> {
     Python::with_gil(|py| {
-        let object = call_lambda_with_series(py, s.clone().take_materialized_series(), lambda)
-            .map_err(|s| ComputeError(format!("{}", s).into()))?;
+        let object = call_lambda_with_series(py, s.as_materialized_series(), lambda)?;
         object.to_series(py, polars(py), s.name()).map(Column::from)
     })
 }
 
 fn python_function_caller_df(df: DataFrame, lambda: &PyObject) -> PolarsResult<DataFrame> {
     Python::with_gil(|py| {
-        // create a PyDataFrame struct/object for Python
-        let pydf = PyDataFrame::new(df);
-        // Wrap this PyDataFrame object in the python side DataFrame wrapper
-        let python_df_wrapper = polars(py)
-            .getattr(py, "wrap_df")
+        let pypolars = polars(py).bind(py);
+
+        // create a PySeries struct/object for Python
+        let mut pydf = PyDataFrame::new(df);
+        // Wrap this PySeries object in the python side Series wrapper
+        let mut python_df_wrapper = pypolars
+            .getattr("wrap_df")
             .unwrap()
-            .call1(py, (pydf,))
+            .call1((pydf.clone(),))
             .unwrap();
+
+        if !python_df_wrapper
+            .getattr("_df")
+            .unwrap()
+            .is_instance(polars_rs(py).getattr(py, "PyDataFrame").unwrap().bind(py))
+            .unwrap()
+        {
+            let pldf = pl_df(py).bind(py);
+            let width = pydf.width();
+            // Don't resize the Vec to avoid calling SeriesExport's Drop impl
+            // The import takes ownership and is responsible for dropping
+            let mut columns: Vec<SeriesExport> = Vec::with_capacity(width);
+            unsafe {
+                pydf._export_columns(columns.as_mut_ptr() as usize);
+            }
+            // Wrap this PyDataFrame object in the python side DataFrame wrapper
+            python_df_wrapper = pldf
+                .getattr("_import_columns")
+                .unwrap()
+                .call1((columns.as_mut_ptr() as usize, width))
+                .unwrap();
+        }
         // call the lambda and get a python side df wrapper
-        let result_df_wrapper = lambda.call1(py, (python_df_wrapper,)).map_err(|e| {
-            PolarsError::ComputeError(format!("User provided python function failed: {e}").into())
-        })?;
+        let result_df_wrapper = lambda.call1(py, (python_df_wrapper,))?;
+
         // unpack the wrapper in a PyDataFrame
         let py_pydf = result_df_wrapper.getattr(py, "_df").map_err(|_| {
             let pytype = result_df_wrapper.bind(py).get_type();
@@ -48,13 +72,11 @@ fn python_function_caller_df(df: DataFrame, lambda: &PyObject) -> PolarsResult<D
                     .into(),
             )
         })?;
-
         // Downcast to Rust
-        let pydf = py_pydf.extract::<PyDataFrame>(py).unwrap();
-        // Finally get the actual DataFrame
-        let df = pydf.df;
-
-        Ok(df)
+        match py_pydf.extract::<PyDataFrame>(py) {
+            Ok(pydf) => Ok(pydf.df),
+            Err(_) => python_df_to_rust(py, result_df_wrapper.into_bound(py)),
+        }
     })
 }
 
@@ -99,10 +121,32 @@ pub unsafe fn register_startup_deps(catch_keyboard_interrupt: bool) {
             });
             Box::new(object) as Box<dyn Any>
         });
+        let pyobject_converter = Arc::new(|av: AnyValue| {
+            let object = Python::with_gil(|py| Wrap(av).into_py_any(py).unwrap());
+            Box::new(object) as Box<dyn Any>
+        });
+
+        polars_utils::python_convert_registry::register_converters(PythonConvertRegistry {
+            from_py: FromPythonConvertRegistry {
+                sink_target: Arc::new(|py_f| {
+                    Python::with_gil(|py| {
+                        Ok(
+                            Box::new(py_f.extract::<Wrap<polars_plan::dsl::SinkTarget>>(py)?.0)
+                                as _,
+                        )
+                    })
+                }),
+            },
+        });
 
         let object_size = size_of::<ObjectValue>();
         let physical_dtype = ArrowDataType::FixedSizeBinary(object_size);
-        registry::register_object_builder(object_builder, object_converter, physical_dtype);
+        registry::register_object_builder(
+            object_builder,
+            object_converter,
+            pyobject_converter,
+            physical_dtype,
+        );
         // Register SERIES UDF.
         python_dsl::CALL_COLUMNS_UDF_PYTHON = Some(python_function_caller_series);
         // Register DATAFRAME UDF.
@@ -113,12 +157,5 @@ pub unsafe fn register_startup_deps(catch_keyboard_interrupt: bool) {
         if catch_keyboard_interrupt {
             register_polars_keyboard_interrupt_hook();
         }
-
-        Python::with_gil(|py| {
-            // Init AnyValue LUT.
-            crate::conversion::any_value::LUT
-                .set(py, Default::default())
-                .unwrap();
-        });
     });
 }

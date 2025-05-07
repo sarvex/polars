@@ -1,5 +1,6 @@
 use polars::lazy::dsl;
 use polars::prelude::*;
+use polars_plan::plans::DynLiteralValue;
 use polars_plan::prelude::UnionArgs;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -269,7 +270,7 @@ pub fn cum_reduce(lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
 }
 
 #[pyfunction]
-#[pyo3(signature = (year, month, day, hour=None, minute=None, second=None, microsecond=None, time_unit=Wrap(TimeUnit::Microseconds), time_zone=None, ambiguous=PyExpr::from(dsl::lit(String::from("raise")))))]
+#[pyo3(signature = (year, month, day, hour=None, minute=None, second=None, microsecond=None, time_unit=Wrap(TimeUnit::Microseconds), time_zone=Wrap(None), ambiguous=PyExpr::from(dsl::lit(String::from("raise")))))]
 pub fn datetime(
     year: PyExpr,
     month: PyExpr,
@@ -279,7 +280,7 @@ pub fn datetime(
     second: Option<PyExpr>,
     microsecond: Option<PyExpr>,
     time_unit: Wrap<TimeUnit>,
-    time_zone: Option<Wrap<TimeZone>>,
+    time_zone: Wrap<Option<TimeZone>>,
     ambiguous: PyExpr,
 ) -> PyExpr {
     let year = year.inner;
@@ -288,7 +289,7 @@ pub fn datetime(
     set_unwrapped_or_0!(hour, minute, second, microsecond);
     let ambiguous = ambiguous.inner;
     let time_unit = time_unit.0;
-    let time_zone = time_zone.map(|x| x.0);
+    let time_zone = time_zone.0;
     let args = DatetimeArgs {
         year,
         month,
@@ -420,7 +421,13 @@ pub fn first() -> PyExpr {
 }
 
 #[pyfunction]
-pub fn fold(acc: PyExpr, lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
+pub fn fold(
+    acc: PyExpr,
+    lambda: PyObject,
+    exprs: Vec<PyExpr>,
+    returns_scalar: bool,
+    return_dtype: Option<Wrap<DataType>>,
+) -> PyExpr {
     let exprs = exprs.to_exprs();
 
     let func = move |a: Column, b: Column| {
@@ -431,7 +438,14 @@ pub fn fold(acc: PyExpr, lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
         )
         .map(|v| v.map(Column::from))
     };
-    dsl::fold_exprs(acc.inner, func, exprs).into()
+    dsl::fold_exprs(
+        acc.inner,
+        func,
+        exprs,
+        returns_scalar,
+        return_dtype.map(|w| w.0),
+    )
+    .into()
 }
 
 #[pyfunction]
@@ -455,10 +469,10 @@ pub fn lit(value: &Bound<'_, PyAny>, allow_object: bool, is_scalar: bool) -> PyR
             .extract::<i128>()
             .map_err(|e| polars_err!(InvalidOperation: "integer too large for Polars: {e}"))
             .map_err(PyPolarsErr::from)?;
-        Ok(Expr::Literal(LiteralValue::Int(v)).into())
+        Ok(Expr::Literal(LiteralValue::Dyn(DynLiteralValue::Int(v))).into())
     } else if let Ok(float) = value.downcast::<PyFloat>() {
         let val = float.extract::<f64>()?;
-        Ok(Expr::Literal(LiteralValue::Float(val)).into())
+        Ok(Expr::Literal(LiteralValue::Dyn(DynLiteralValue::Float(val))).into())
     } else if let Ok(pystr) = value.downcast::<PyString>() {
         Ok(dsl::lit(pystr.to_string()).into())
     } else if let Ok(series) = value.extract::<PySeries>() {
@@ -532,7 +546,7 @@ pub fn reduce(lambda: PyObject, exprs: Vec<PyExpr>) -> PyExpr {
 
 #[pyfunction]
 #[pyo3(signature = (value, n, dtype=None))]
-pub fn repeat(value: PyExpr, n: PyExpr, dtype: Option<Wrap<DataType>>) -> PyResult<PyExpr> {
+pub fn repeat(value: PyExpr, n: PyExpr, dtype: Option<Wrap<DataType>>) -> PyExpr {
     let mut value = value.inner;
     let n = n.inner;
 
@@ -540,7 +554,7 @@ pub fn repeat(value: PyExpr, n: PyExpr, dtype: Option<Wrap<DataType>>) -> PyResu
         value = value.cast(dtype.0);
     }
 
-    Ok(dsl::repeat(value, n).into())
+    dsl::repeat(value, n).into()
 }
 
 #[pyfunction]

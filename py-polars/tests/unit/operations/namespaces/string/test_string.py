@@ -10,7 +10,6 @@ from polars.exceptions import (
     ColumnNotFoundError,
     ComputeError,
     InvalidOperationError,
-    SchemaError,
     ShapeError,
 )
 from polars.testing import assert_frame_equal, assert_series_equal
@@ -450,6 +449,17 @@ def test_str_to_integer() -> None:
 
     with pytest.raises(ComputeError):
         hex.str.to_integer(base=16)
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_str_to_integer_invalid_base(strict: bool) -> None:
+    numbers = pl.Series(["1", "ZZZ", "-ABCZZZ", None])
+    with pytest.raises(ComputeError):
+        numbers.str.to_integer(base=100, strict=strict)
+
+    df = pl.DataFrame({"str": numbers, "base": [0, 1, 100, None]})
+    with pytest.raises(ComputeError):
+        df.select(pl.col("str").str.to_integer(base=pl.col("base"), strict=strict))
 
 
 def test_str_to_integer_base_expr() -> None:
@@ -1259,13 +1269,13 @@ def test_replace_many_invalid_inputs() -> None:
     with pytest.raises(ColumnNotFoundError, match="me"):
         df.select(pl.col("text").str.replace_many("me", "you"))
 
-    with pytest.raises(SchemaError):
+    with pytest.raises(InvalidOperationError):
         df.select(pl.col("text").str.replace_many(1, 2))
 
-    with pytest.raises(SchemaError):
+    with pytest.raises(InvalidOperationError):
         df.select(pl.col("text").str.replace_many([1], [2]))
 
-    with pytest.raises(SchemaError):
+    with pytest.raises(InvalidOperationError):
         df.select(pl.col("text").str.replace_many(["me"], None))
 
     with pytest.raises(TypeError):
@@ -1281,9 +1291,6 @@ def test_replace_many_invalid_inputs() -> None:
 
     with pytest.raises(ColumnNotFoundError, match="me"):
         s.str.replace_many("me", "you")  # type: ignore[arg-type]
-
-    with pytest.raises(SchemaError):
-        df.select(pl.col("text").str.replace_many(["me"], None))
 
     with pytest.raises(TypeError):
         df.select(pl.col("text").str.replace_many(["me"]))
@@ -1951,3 +1958,40 @@ def test_string_normalize(form: Any, expected_data: list[str | None]) -> None:
 def test_string_normalize_wrong_input() -> None:
     with pytest.raises(ValueError, match="`form` must be one of"):
         pl.Series(["01²"], dtype=pl.String).str.normalize("foobar")  # type: ignore[arg-type]
+
+
+def test_to_integer_unequal_lengths_22034() -> None:
+    s = pl.Series("a", ["1", "2", "3"], pl.String)
+    with pytest.raises(pl.exceptions.ShapeError):
+        s.str.to_integer(base=pl.Series([4, 5, 5, 4]))
+
+
+def test_broadcast_self() -> None:
+    s = pl.Series("a", ["3"], pl.String)
+    with pytest.raises(
+        pl.exceptions.ComputeError, match="strict integer parsing failed"
+    ):
+        s.str.to_integer(base=pl.Series([2, 2, 3, 4]))
+
+
+def test_strptime_unequal_length_22018() -> None:
+    s = pl.Series(["2020-01-01 01:00Z", "2020-01-01 02:00Z"])
+    with pytest.raises(pl.exceptions.ShapeError):
+        s.str.strptime(
+            pl.Datetime, "%Y-%m-%d %H:%M%#z", ambiguous=pl.Series(["a", "b", "d"])
+        )
+
+
+@pytest.mark.parametrize("inclusive", [False, True])
+def test_str_split_unequal_length_22018(inclusive: bool) -> None:
+    with pytest.raises(pl.exceptions.ShapeError):
+        pl.Series(["a-c", "x-y"]).str.split(
+            pl.Series(["-", "/", "+"]), inclusive=inclusive
+        )
+
+
+def test_str_split_self_broadcast() -> None:
+    assert_series_equal(
+        pl.Series(["a-/c"]).str.split(pl.Series(["-", "/", "+"])),
+        pl.Series([["a", "/c"], ["a-", "c"], ["a-/c"]]),
+    )

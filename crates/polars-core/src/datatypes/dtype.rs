@@ -7,13 +7,12 @@ use polars_utils::itertools::Itertools;
 #[cfg(any(feature = "serde-lazy", feature = "serde"))]
 use serde::{Deserialize, Serialize};
 use strum_macros::IntoStaticStr;
+pub use temporal::time_zone::TimeZone;
 
 use super::*;
 #[cfg(feature = "object")]
 use crate::chunked_array::object::registry::get_object_physical_type;
 use crate::utils::materialize_dyn_int;
-
-pub type TimeZone = PlSmallStr;
 
 static MAINTAIN_PL_TYPE: &str = "maintain_type";
 static PL_KEY: &str = "pl";
@@ -192,7 +191,9 @@ impl PartialEq for DataType {
                 #[cfg(feature = "object")]
                 (Object(lhs), Object(rhs)) => lhs == rhs,
                 #[cfg(feature = "dtype-struct")]
-                (Struct(lhs), Struct(rhs)) => Vec::as_ptr(lhs) == Vec::as_ptr(rhs) || lhs == rhs,
+                (Struct(lhs), Struct(rhs)) => {
+                    std::ptr::eq(Vec::as_ptr(lhs), Vec::as_ptr(rhs)) || lhs == rhs
+                },
                 #[cfg(feature = "dtype-array")]
                 (Array(left_inner, left_width), Array(right_inner, right_width)) => {
                     left_width == right_width && left_inner == right_inner
@@ -210,26 +211,16 @@ impl PartialEq for DataType {
 impl Eq for DataType {}
 
 impl DataType {
-    pub fn new_idxsize() -> Self {
-        #[cfg(feature = "bigidx")]
-        {
-            Self::UInt64
-        }
+    pub const IDX_DTYPE: Self = {
         #[cfg(not(feature = "bigidx"))]
         {
-            Self::UInt32
+            DataType::UInt32
         }
-    }
-
-    /// Standardize timezones to consistent values.
-    pub(crate) fn canonical_timezone(tz: &Option<PlSmallStr>) -> Option<TimeZone> {
-        match tz.as_deref() {
-            Some("") | None => None,
-            #[cfg(feature = "timezones")]
-            Some("+00:00") | Some("00:00") | Some("utc") => Some(PlSmallStr::from_static("UTC")),
-            Some(v) => Some(PlSmallStr::from_str(v)),
+        #[cfg(feature = "bigidx")]
+        {
+            DataType::UInt64
         }
-    }
+    };
 
     pub fn value_within_range(&self, other: AnyValue) -> bool {
         use DataType::*;
@@ -534,6 +525,9 @@ impl DataType {
     pub fn is_date(&self) -> bool {
         matches!(self, DataType::Date)
     }
+    pub fn is_datetime(&self) -> bool {
+        matches!(self, DataType::Datetime(..))
+    }
 
     pub fn is_object(&self) -> bool {
         #[cfg(feature = "object")]
@@ -591,6 +585,20 @@ impl DataType {
             Array(inner, _) => inner.contains_objects(),
             #[cfg(feature = "dtype-struct")]
             Struct(fields) => fields.iter().any(|field| field.dtype.contains_objects()),
+            _ => false,
+        }
+    }
+
+    pub fn contains_list_recursive(&self) -> bool {
+        use DataType as D;
+        match self {
+            D::List(_) => true,
+            #[cfg(feature = "dtype-array")]
+            D::Array(inner, _) => inner.contains_list_recursive(),
+            #[cfg(feature = "dtype-struct")]
+            D::Struct(fields) => fields
+                .iter()
+                .any(|field| field.dtype.contains_list_recursive()),
             _ => false,
         }
     }
@@ -819,7 +827,10 @@ impl DataType {
                 Ok(dt)
             },
             Date => Ok(ArrowDataType::Date32),
-            Datetime(unit, tz) => Ok(ArrowDataType::Timestamp(unit.to_arrow(), tz.clone())),
+            Datetime(unit, tz) => Ok(ArrowDataType::Timestamp(
+                unit.to_arrow(),
+                tz.as_deref().cloned(),
+            )),
             Duration(unit) => Ok(ArrowDataType::Duration(unit.to_arrow())),
             Time => Ok(ArrowDataType::Time64(ArrowTimeUnit::Nanosecond)),
             #[cfg(feature = "dtype-array")]
@@ -913,6 +924,21 @@ impl DataType {
                 polars_bail!(SchemaMismatch: "type {:?} is incompatible with expected type {:?}", l, r)
             },
         }
+    }
+
+    #[inline]
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, DataType::Unknown(_))
+    }
+
+    pub fn nesting_level(&self) -> usize {
+        let mut level = 0;
+        let mut slf = self;
+        while let Some(inner_dtype) = slf.inner_dtype() {
+            level += 1;
+            slf = inner_dtype;
+        }
+        level
     }
 }
 

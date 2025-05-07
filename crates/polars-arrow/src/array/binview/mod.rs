@@ -7,6 +7,8 @@ mod ffi;
 pub(super) mod fmt;
 mod iterator;
 mod mutable;
+#[cfg(feature = "proptest")]
+pub mod proptest;
 mod view;
 
 use std::any::Any;
@@ -33,12 +35,12 @@ pub use mutable::MutableBinaryViewArray;
 use polars_utils::aliases::{InitHashMaps, PlHashMap};
 use private::Sealed;
 
-use crate::array::binview::view::{validate_binary_view, validate_utf8_only};
+use crate::array::binview::view::{validate_binary_views, validate_views_utf8_only};
 use crate::array::iterator::NonNullValuesIter;
 use crate::bitmap::utils::{BitmapIter, ZipValidity};
 pub type BinaryViewArray = BinaryViewArrayGeneric<[u8]>;
 pub type Utf8ViewArray = BinaryViewArrayGeneric<str>;
-pub use view::{View, validate_utf8_view};
+pub use view::{View, validate_utf8_views};
 
 use super::Splitable;
 
@@ -316,9 +318,9 @@ impl<T: ViewType + ?Sized> BinaryViewArrayGeneric<T> {
         validity: Option<Bitmap>,
     ) -> PolarsResult<Self> {
         if T::IS_UTF8 {
-            validate_utf8_view(views.as_ref(), buffers.as_ref())?;
+            validate_utf8_views(views.as_ref(), buffers.as_ref())?;
         } else {
-            validate_binary_view(views.as_ref(), buffers.as_ref())?;
+            validate_binary_views(views.as_ref(), buffers.as_ref())?;
         }
 
         if let Some(validity) = &validity {
@@ -496,7 +498,7 @@ impl<T: ViewType + ?Sized> BinaryViewArrayGeneric<T> {
     }
 
     pub fn is_sliced(&self) -> bool {
-        self.views.as_ptr() != self.views.storage_ptr()
+        !std::ptr::eq(self.views.as_ptr(), self.views.storage_ptr())
     }
 
     pub fn maybe_gc(self) -> Self {
@@ -561,7 +563,7 @@ impl BinaryViewArray {
     /// Validate the underlying bytes on UTF-8.
     pub fn validate_utf8(&self) -> PolarsResult<()> {
         // SAFETY: views are correct
-        unsafe { validate_utf8_only(&self.views, &self.buffers, &self.buffers) }
+        unsafe { validate_views_utf8_only(&self.views, &self.buffers, 0) }
     }
 
     /// Convert [`BinaryViewArray`] to [`Utf8ViewArray`].

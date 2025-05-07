@@ -220,7 +220,11 @@ def test_collapse_joins() -> None:
     e = inner_join.explain()
     assert "INNER JOIN" in e
     assert "FILTER" not in e
-    assert_frame_equal(inner_join.collect(collapse_joins=False), inner_join.collect())
+    assert_frame_equal(
+        inner_join.collect(collapse_joins=False),
+        inner_join.collect(),
+        check_row_order=False,
+    )
 
     inner_join = cross.filter(pl.col.x == pl.col.a)
     e = inner_join.explain()
@@ -329,3 +333,50 @@ def test_collapse_joins_combinations() -> None:
                     print()
 
                     raise
+
+
+def test_order_observe_sort_before_unique_22485() -> None:
+    lf = pl.LazyFrame(
+        {
+            "order": [3, 2, 1],
+            "id": ["A", "A", "B"],
+        }
+    )
+
+    expect = pl.DataFrame({"order": [1, 3], "id": ["B", "A"]})
+
+    q = lf.sort("order").unique(["id"], keep="last").sort("order")
+
+    plan = q.explain()
+    assert "SORT BY" in plan[plan.index("UNIQUE") :]
+
+    assert_frame_equal(q.collect(), expect)
+
+    q = lf.sort("order").unique(["id"], keep="last", maintain_order=True)
+
+    plan = q.explain()
+    assert "SORT BY" in plan[plan.index("UNIQUE") :]
+
+    assert_frame_equal(q.collect(), expect)
+
+
+def test_order_observe_group_by() -> None:
+    q = (
+        pl.LazyFrame({"a": range(5)})
+        .group_by("a", maintain_order=True)
+        .agg(b=1)
+        .sort("b")
+    )
+
+    plan = q.explain()
+    assert "AGGREGATE[maintain_order: false]" in plan
+
+    q = (
+        pl.LazyFrame({"a": range(5)})
+        .group_by("a", maintain_order=True)
+        .agg(b=1)
+        .sort("b", maintain_order=True)
+    )
+
+    plan = q.explain()
+    assert "AGGREGATE[maintain_order: true]" in plan

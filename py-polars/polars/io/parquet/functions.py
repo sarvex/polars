@@ -27,6 +27,7 @@ from polars.io.cloud.credential_provider._builder import (
 
 with contextlib.suppress(ImportError):
     from polars.polars import PyLazyFrame
+    from polars.polars import read_parquet_metadata as _read_parquet_metadata
     from polars.polars import read_parquet_schema as _read_parquet_schema
 
 if TYPE_CHECKING:
@@ -67,6 +68,10 @@ def read_parquet(
 ) -> DataFrame:
     """
     Read into a DataFrame from a parquet file.
+
+    .. versionchanged:: 0.20.4
+        * The `row_count_name` parameter was renamed `row_index_name`.
+        * The `row_count_offset` parameter was renamed `row_index_offset`.
 
     Parameters
     ----------
@@ -187,11 +192,11 @@ def read_parquet(
 
     """
     if schema is not None:
-        msg = "The `schema` parameter of `read_parquet` is considered unstable."
+        msg = "the `schema` parameter of `read_parquet` is considered unstable."
         issue_unstable_warning(msg)
 
     if hive_schema is not None:
-        msg = "The `hive_schema` parameter of `read_parquet` is considered unstable."
+        msg = "the `hive_schema` parameter of `read_parquet` is considered unstable."
         issue_unstable_warning(msg)
 
     # Dispatch to pyarrow if requested
@@ -329,6 +334,33 @@ def read_parquet_schema(source: str | Path | IO[bytes] | bytes) -> dict[str, Dat
     return _read_parquet_schema(source)
 
 
+def read_parquet_metadata(source: str | Path | IO[bytes] | bytes) -> dict[str, str]:
+    """
+    Get file-level custom metadata of a Parquet file without reading data.
+
+    .. warning::
+        This functionality is considered **experimental**. It may be removed or
+        changed at any point without it being considered a breaking change.
+
+    Parameters
+    ----------
+    source
+        Path to a file or a file-like object (by "file-like object" we refer to objects
+        that have a `read()` method, such as a file handler like the builtin `open`
+        function, or a `BytesIO` instance). For file-like objects, the stream position
+        may not be updated accordingly after reading.
+
+    Returns
+    -------
+    dict
+        Dictionary with the metadata. Empty if no custom metadata is available.
+    """
+    if isinstance(source, (str, Path)):
+        source = normalize_filepath(source, check_not_directory=False)
+
+    return _read_parquet_metadata(source)
+
+
 @deprecate_renamed_parameter("row_count_name", "row_index_name", version="0.20.4")
 @deprecate_renamed_parameter("row_count_offset", "row_index_offset", version="0.20.4")
 def scan_parquet(
@@ -358,6 +390,10 @@ def scan_parquet(
 
     This function allows the query optimizer to push down predicates and projections to
     the scan level, typically increasing performance and reducing memory overhead.
+
+    .. versionchanged:: 0.20.4
+        * The `row_count_name` parameter was renamed `row_index_name`.
+        * The `row_count_offset` parameter was renamed `row_index_offset`.
 
     Parameters
     ----------
@@ -479,11 +515,11 @@ def scan_parquet(
     >>> pl.scan_parquet(source, storage_options=storage_options)  # doctest: +SKIP
     """
     if schema is not None:
-        msg = "The `schema` parameter of `scan_parquet` is considered unstable."
+        msg = "the `schema` parameter of `scan_parquet` is considered unstable."
         issue_unstable_warning(msg)
 
     if hive_schema is not None:
-        msg = "The `hive_schema` parameter of `scan_parquet` is considered unstable."
+        msg = "the `hive_schema` parameter of `scan_parquet` is considered unstable."
         issue_unstable_warning(msg)
 
     if isinstance(source, (str, Path)):

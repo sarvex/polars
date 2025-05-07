@@ -46,6 +46,12 @@ impl Display for TrigonometricFunction {
     }
 }
 
+impl From<TrigonometricFunction> for FunctionExpr {
+    fn from(value: TrigonometricFunction) -> Self {
+        Self::Trigonometry(value)
+    }
+}
+
 pub(super) fn apply_trigonometric_function(
     s: &Column,
     trig_function: TrigonometricFunction,
@@ -110,7 +116,7 @@ where
     T::Native: Float,
     ChunkedArray<T>: IntoColumn,
 {
-    let dtype = T::get_dtype();
+    let dtype = T::get_static_dtype();
     let x = x.cast(&dtype)?;
     let x = y
         .unpack_series_matching_type(x.as_materialized_series())

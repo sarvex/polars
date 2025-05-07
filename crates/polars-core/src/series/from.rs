@@ -17,13 +17,26 @@ use crate::chunked_array::cast::{CastOptions, cast_chunks};
 use crate::chunked_array::object::extension::polars_extension::PolarsExtension;
 #[cfg(feature = "object")]
 use crate::chunked_array::object::registry::get_object_builder;
-#[cfg(feature = "timezones")]
-use crate::chunked_array::temporal::parse_fixed_offset;
-#[cfg(feature = "timezones")]
-use crate::chunked_array::temporal::validate_time_zone;
 use crate::prelude::*;
 
 impl Series {
+    pub fn from_chunk_and_dtype(
+        name: PlSmallStr,
+        chunk: ArrayRef,
+        dtype: &DataType,
+    ) -> PolarsResult<Self> {
+        if &dtype.to_physical().to_arrow(CompatLevel::newest()) != chunk.dtype() {
+            polars_bail!(
+                InvalidOperation: "cannot create a series of type '{dtype}' of arrow chunk with type '{:?}'",
+                chunk.dtype()
+            );
+        }
+
+        // SAFETY: We check that the datatype matches.
+        let series = unsafe { Self::from_chunks_and_dtype_unchecked(name, vec![chunk], dtype) };
+        Ok(series)
+    }
+
     /// Takes chunks and a polars datatype and constructs the Series
     /// This is faster than creating from chunks and an arrow datatype because there is no
     /// casting involved
@@ -108,7 +121,7 @@ impl Series {
             Struct(_) => {
                 let mut ca =
                     StructChunked::from_chunks_and_dtype_unchecked(name, chunks, dtype.clone());
-                ca.propagate_nulls();
+                StructChunked::propagate_nulls_mut(&mut ca);
                 ca.into_series()
             },
             #[cfg(feature = "object")]
@@ -241,15 +254,7 @@ impl Series {
             },
             #[cfg(feature = "dtype-datetime")]
             ArrowDataType::Timestamp(tu, tz) => {
-                let canonical_tz = DataType::canonical_timezone(tz);
-                let tz = match canonical_tz.as_deref() {
-                    #[cfg(feature = "timezones")]
-                    Some(tz_str) => match validate_time_zone(tz_str) {
-                        Ok(_) => canonical_tz,
-                        Err(_) => Some(parse_fixed_offset(tz_str)?),
-                    },
-                    _ => canonical_tz,
-                };
+                let tz = TimeZone::opt_try_new(tz.clone())?;
                 let chunks =
                     cast_chunks(&chunks, &DataType::Int64, CastOptions::NonStrict).unwrap();
                 let s = Int64Chunked::from_chunks(name, chunks)
@@ -468,7 +473,7 @@ impl Series {
                 unsafe {
                     let mut ca =
                         StructChunked::from_chunks_and_dtype_unchecked(name, chunks, dtype);
-                    ca.propagate_nulls();
+                    StructChunked::propagate_nulls_mut(&mut ca);
                     Ok(ca.into_series())
                 }
             },

@@ -148,10 +148,8 @@ def _resolve_file_path(path: Path, *, use_abs_path: bool = False) -> Path:
         return path.resolve()
     else:
         try:
-            relpath = path.relative_to(venv_path)
-        except (
-            ValueError
-        ):  # If the path is not inside the venv use absolute path instead
-            return path.resolve()
-        else:
-            return relpath
+            file_path = path.relative_to(venv_path)
+        except ValueError:  # Fallback
+            file_path = path.resolve()
+
+    return file_path

@@ -29,6 +29,7 @@ use std::any::Any;
 use std::borrow::Cow;
 
 use polars_compute::rolling::QuantileMethod;
+use polars_utils::aliases::PlSeedableRandomStateQuality;
 
 use super::*;
 use crate::chunked_array::AsSinglePtr;
@@ -116,7 +117,7 @@ macro_rules! impl_dyn_series {
 
             fn vec_hash(
                 &self,
-                random_state: PlRandomState,
+                random_state: PlSeedableRandomStateQuality,
                 buf: &mut Vec<u64>,
             ) -> PolarsResult<()> {
                 self.0.vec_hash(random_state, buf)?;
@@ -125,7 +126,7 @@ macro_rules! impl_dyn_series {
 
             fn vec_hash_combine(
                 &self,
-                build_hasher: PlRandomState,
+                build_hasher: PlSeedableRandomStateQuality,
                 hashes: &mut [u64],
             ) -> PolarsResult<()> {
                 self.0.vec_hash_combine(build_hasher, hashes)?;
@@ -407,7 +408,7 @@ macro_rules! impl_dyn_series {
 
             #[cfg(feature = "bitwise")]
             fn and_reduce(&self) -> PolarsResult<Scalar> {
-                let dt = <$pdt as PolarsDataType>::get_dtype();
+                let dt = <$pdt as PolarsDataType>::get_static_dtype();
                 let av = self.0.and_reduce().map_or(AnyValue::Null, Into::into);
 
                 Ok(Scalar::new(dt, av))
@@ -415,7 +416,7 @@ macro_rules! impl_dyn_series {
 
             #[cfg(feature = "bitwise")]
             fn or_reduce(&self) -> PolarsResult<Scalar> {
-                let dt = <$pdt as PolarsDataType>::get_dtype();
+                let dt = <$pdt as PolarsDataType>::get_static_dtype();
                 let av = self.0.or_reduce().map_or(AnyValue::Null, Into::into);
 
                 Ok(Scalar::new(dt, av))
@@ -423,7 +424,7 @@ macro_rules! impl_dyn_series {
 
             #[cfg(feature = "bitwise")]
             fn xor_reduce(&self) -> PolarsResult<Scalar> {
-                let dt = <$pdt as PolarsDataType>::get_dtype();
+                let dt = <$pdt as PolarsDataType>::get_static_dtype();
                 let av = self.0.xor_reduce().map_or(AnyValue::Null, Into::into);
 
                 Ok(Scalar::new(dt, av))
@@ -436,6 +437,10 @@ macro_rules! impl_dyn_series {
 
             fn clone_inner(&self) -> Arc<dyn SeriesTrait> {
                 Arc::new(SeriesWrap(Clone::clone(&self.0)))
+            }
+
+            fn find_validity_mismatch(&self, other: &Series, idxs: &mut Vec<IdxSize>) {
+                self.0.find_validity_mismatch(other, idxs)
             }
 
             #[cfg(feature = "checked_arithmetic")]

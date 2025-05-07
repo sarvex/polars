@@ -1,8 +1,6 @@
 use polars_core::POOL;
 use polars_core::prelude::*;
 use polars_expr::state::ExecutionState;
-use polars_io::utils::file::Writeable;
-use polars_io::utils::mkdir::mkdir_recursive;
 use polars_plan::global::_set_n_rows_for_scan;
 use polars_plan::plans::expr_ir::ExprIR;
 use polars_utils::format_pl_smallstr;
@@ -17,6 +15,9 @@ use super::*;
 use crate::ScanPredicate;
 use crate::executors::{CachePrefiller, SinkExecutor};
 use crate::predicate::PhysicalColumnPredicates;
+
+pub type StreamingExecutorBuilder =
+    fn(Node, &mut Arena<IR>, &mut Arena<AExpr>) -> PolarsResult<Box<dyn Executor>>;
 
 fn partitionable_gb(
     keys: &[ExprIR],
@@ -53,7 +54,6 @@ fn partitionable_gb(
 
 #[derive(Clone)]
 struct ConversionState {
-    expr_depth: u16,
     has_cache_child: bool,
     has_cache_parent: bool,
 }
@@ -61,7 +61,6 @@ struct ConversionState {
 impl ConversionState {
     fn new() -> PolarsResult<Self> {
         Ok(ConversionState {
-            expr_depth: get_expr_depth_limit()?,
             has_cache_child: false,
             has_cache_parent: false,
         })
@@ -80,10 +79,18 @@ pub fn create_physical_plan(
     root: Node,
     lp_arena: &mut Arena<IR>,
     expr_arena: &mut Arena<AExpr>,
+    build_streaming_executor: Option<StreamingExecutorBuilder>,
 ) -> PolarsResult<Box<dyn Executor>> {
     let mut state = ConversionState::new()?;
     let mut cache_nodes = Default::default();
-    let plan = create_physical_plan_impl(root, lp_arena, expr_arena, &mut state, &mut cache_nodes)?;
+    let plan = create_physical_plan_impl(
+        root,
+        lp_arena,
+        expr_arena,
+        &mut state,
+        &mut cache_nodes,
+        build_streaming_executor,
+    )?;
 
     if cache_nodes.is_empty() {
         Ok(plan)
@@ -103,6 +110,7 @@ pub fn create_multiple_physical_plans(
     roots: &[Node],
     lp_arena: &mut Arena<IR>,
     expr_arena: &mut Arena<AExpr>,
+    build_streaming_executor: Option<StreamingExecutorBuilder>,
 ) -> PolarsResult<MultiplePhysicalPlans> {
     let mut state = ConversionState::new()?;
     let mut cache_nodes = Default::default();
@@ -110,7 +118,14 @@ pub fn create_multiple_physical_plans(
         roots
             .iter()
             .map(|&node| {
-                create_physical_plan_impl(node, lp_arena, expr_arena, new_state, &mut cache_nodes)
+                create_physical_plan_impl(
+                    node,
+                    lp_arena,
+                    expr_arena,
+                    new_state,
+                    &mut cache_nodes,
+                    build_streaming_executor,
+                )
             })
             .collect::<PolarsResult<Vec<_>>>()
     })?;
@@ -134,6 +149,58 @@ pub fn create_multiple_physical_plans(
     })
 }
 
+#[cfg(feature = "python")]
+#[allow(clippy::type_complexity)]
+pub fn python_scan_predicate(
+    options: &mut PythonOptions,
+    expr_arena: &Arena<AExpr>,
+    state: &mut ExpressionConversionState,
+) -> PolarsResult<(
+    Option<Arc<dyn polars_expr::prelude::PhysicalExpr>>,
+    Option<Vec<u8>>,
+)> {
+    let mut predicate_serialized = None;
+    let predicate = if let PythonPredicate::Polars(e) = &options.predicate {
+        // Convert to a pyarrow eval string.
+        if matches!(options.python_source, PythonScanSource::Pyarrow) {
+            if let Some(eval_str) = polars_plan::plans::python::pyarrow::predicate_to_pa(
+                e.node(),
+                expr_arena,
+                Default::default(),
+            ) {
+                options.predicate = PythonPredicate::PyArrow(eval_str);
+                // We don't have to use a physical expression as pyarrow deals with the filter.
+                None
+            } else {
+                Some(create_physical_expr(
+                    e,
+                    Context::Default,
+                    expr_arena,
+                    &options.schema,
+                    state,
+                )?)
+            }
+        }
+        // Convert to physical expression for the case the reader cannot consume the predicate.
+        else {
+            let dsl_expr = e.to_expr(expr_arena);
+            predicate_serialized = polars_plan::plans::python::predicate::serialize(&dsl_expr)?;
+
+            Some(create_physical_expr(
+                e,
+                Context::Default,
+                expr_arena,
+                &options.schema,
+                state,
+            )?)
+        }
+    } else {
+        None
+    };
+
+    Ok((predicate, predicate_serialized))
+}
+
 #[recursive]
 fn create_physical_plan_impl(
     root: Node,
@@ -142,16 +209,24 @@ fn create_physical_plan_impl(
     state: &mut ConversionState,
     // Cache nodes in order of discovery
     cache_nodes: &mut PlIndexMap<usize, Box<dyn Executor>>,
+    build_streaming_executor: Option<StreamingExecutorBuilder>,
 ) -> PolarsResult<Box<dyn Executor>> {
     use IR::*;
 
     macro_rules! recurse {
         ($node:expr, $state: expr) => {
-            create_physical_plan_impl($node, lp_arena, expr_arena, $state, cache_nodes)
+            create_physical_plan_impl(
+                $node,
+                lp_arena,
+                expr_arena,
+                $state,
+                cache_nodes,
+                build_streaming_executor,
+            )
         };
     }
 
-    let logical_plan = if state.has_cache_parent {
+    let logical_plan = if state.has_cache_parent || matches!(lp_arena.get(root), IR::Scan { .. }) {
         lp_arena.get(root).clone()
     } else {
         lp_arena.take(root)
@@ -160,45 +235,9 @@ fn create_physical_plan_impl(
     match logical_plan {
         #[cfg(feature = "python")]
         PythonScan { mut options } => {
-            let mut predicate_serialized = None;
-
-            let predicate = if let PythonPredicate::Polars(e) = &options.predicate {
-                let phys_expr = || {
-                    let mut state = ExpressionConversionState::new(true, state.expr_depth);
-                    create_physical_expr(
-                        e,
-                        Context::Default,
-                        expr_arena,
-                        &options.schema,
-                        &mut state,
-                    )
-                };
-
-                // Convert to a pyarrow eval string.
-                if matches!(options.python_source, PythonScanSource::Pyarrow) {
-                    if let Some(eval_str) = polars_plan::plans::python::pyarrow::predicate_to_pa(
-                        e.node(),
-                        expr_arena,
-                        Default::default(),
-                    ) {
-                        options.predicate = PythonPredicate::PyArrow(eval_str);
-                        // We don't have to use a physical expression as pyarrow deals with the filter.
-                        None
-                    } else {
-                        Some(phys_expr()?)
-                    }
-                }
-                // Convert to physical expression for the case the reader cannot consume the predicate.
-                else {
-                    let dsl_expr = e.to_expr(expr_arena);
-                    predicate_serialized =
-                        polars_plan::plans::python::predicate::serialize(&dsl_expr)?;
-
-                    Some(phys_expr()?)
-                }
-            } else {
-                None
-            };
+            let mut expr_conv_state = ExpressionConversionState::new(true);
+            let (predicate, predicate_serialized) =
+                python_scan_predicate(&mut options, expr_arena, &mut expr_conv_state)?;
             Ok(Box::new(executors::PythonScanExec {
                 options,
                 predicate,
@@ -215,172 +254,105 @@ fn create_physical_plan_impl(
                 })),
                 SinkTypeIR::File(FileSinkType {
                     file_type,
-                    path,
+                    target,
                     sink_options,
                     cloud_options,
-                }) => match file_type {
-                    #[cfg(feature = "parquet")]
-                    FileType::Parquet(options) => Ok(Box::new(SinkExecutor {
+                }) => {
+                    let name: &'static str = match &file_type {
+                        #[cfg(feature = "parquet")]
+                        FileType::Parquet(_) => "parquet",
+                        #[cfg(feature = "ipc")]
+                        FileType::Ipc(_) => "ipc",
+                        #[cfg(feature = "csv")]
+                        FileType::Csv(_) => "csv",
+                        #[cfg(feature = "json")]
+                        FileType::Json(_) => "json",
+                        #[allow(unreachable_patterns)]
+                        _ => panic!("enable filetype feature"),
+                    };
+
+                    Ok(Box::new(SinkExecutor {
                         input,
-                        name: "parquet".to_string(),
+                        name: name.to_string(),
                         f: Box::new(move |mut df, _state| {
+                            let mut file = target
+                                .open_into_writeable(&sink_options, cloud_options.as_ref())?;
+                            let writer = &mut *file;
+
                             use std::io::BufWriter;
-                            use std::ops::DerefMut;
+                            match &file_type {
+                                #[cfg(feature = "parquet")]
+                                FileType::Parquet(options) => {
+                                    use polars_io::parquet::write::ParquetWriter;
+                                    ParquetWriter::new(BufWriter::new(writer))
+                                        .with_compression(options.compression)
+                                        .with_statistics(options.statistics)
+                                        .with_row_group_size(options.row_group_size)
+                                        .with_data_page_size(options.data_page_size)
+                                        .finish(&mut df)?;
+                                },
+                                #[cfg(feature = "ipc")]
+                                FileType::Ipc(options) => {
+                                    use polars_io::SerWriter;
+                                    use polars_io::ipc::IpcWriter;
+                                    IpcWriter::new(BufWriter::new(writer))
+                                        .with_compression(options.compression)
+                                        .with_compat_level(options.compat_level)
+                                        .finish(&mut df)?;
+                                },
+                                #[cfg(feature = "csv")]
+                                FileType::Csv(options) => {
+                                    use polars_io::SerWriter;
+                                    use polars_io::csv::write::CsvWriter;
+                                    CsvWriter::new(BufWriter::new(writer))
+                                        .include_bom(options.include_bom)
+                                        .include_header(options.include_header)
+                                        .with_separator(options.serialize_options.separator)
+                                        .with_line_terminator(
+                                            options.serialize_options.line_terminator.clone(),
+                                        )
+                                        .with_quote_char(options.serialize_options.quote_char)
+                                        .with_batch_size(options.batch_size)
+                                        .with_datetime_format(
+                                            options.serialize_options.datetime_format.clone(),
+                                        )
+                                        .with_date_format(
+                                            options.serialize_options.date_format.clone(),
+                                        )
+                                        .with_time_format(
+                                            options.serialize_options.time_format.clone(),
+                                        )
+                                        .with_float_scientific(
+                                            options.serialize_options.float_scientific,
+                                        )
+                                        .with_float_precision(
+                                            options.serialize_options.float_precision,
+                                        )
+                                        .with_null_value(options.serialize_options.null.clone())
+                                        .with_quote_style(options.serialize_options.quote_style)
+                                        .finish(&mut df)?;
+                                },
+                                #[cfg(feature = "json")]
+                                FileType::Json(_options) => {
+                                    use polars_io::SerWriter;
+                                    use polars_io::json::{JsonFormat, JsonWriter};
 
-                            use polars_io::parquet::write::ParquetWriter;
-
-                            if sink_options.mkdir {
-                                mkdir_recursive(path.as_path())?;
+                                    JsonWriter::new(BufWriter::new(writer))
+                                        .with_json_format(JsonFormat::JsonLines)
+                                        .finish(&mut df)?;
+                                },
+                                #[allow(unreachable_patterns)]
+                                _ => panic!("enable filetype feature"),
                             }
 
-                            let path = path.as_ref().display().to_string();
-                            let mut file = polars_io::utils::file::Writeable::try_new(
-                                &path,
-                                cloud_options.as_ref(),
-                            )?;
-                            ParquetWriter::new(BufWriter::new(file.deref_mut()))
-                                .with_compression(options.compression)
-                                .with_statistics(options.statistics)
-                                .with_row_group_size(options.row_group_size)
-                                .with_data_page_size(options.data_page_size)
-                                .finish(&mut df)?;
-
-                            if let Writeable::Local(file) = &mut file {
-                                polars_io::utils::sync_on_close::sync_on_close(
-                                    sink_options.sync_on_close,
-                                    file,
-                                )?;
-                            }
+                            file.sync_on_close(sink_options.sync_on_close)?;
                             file.close()?;
 
                             Ok(None)
                         }),
-                    })),
-                    #[cfg(feature = "ipc")]
-                    FileType::Ipc(options) => Ok(Box::new(SinkExecutor {
-                        input,
-                        name: "ipc".to_string(),
-                        f: Box::new(move |mut df, _state| {
-                            use std::io::BufWriter;
-                            use std::ops::DerefMut;
-
-                            use polars_io::SerWriter;
-                            use polars_io::ipc::IpcWriter;
-
-                            if sink_options.mkdir {
-                                mkdir_recursive(path.as_path())?;
-                            }
-
-                            let path = path.as_ref().display().to_string();
-                            let mut file = polars_io::utils::file::Writeable::try_new(
-                                &path,
-                                cloud_options.as_ref(),
-                            )?;
-                            IpcWriter::new(BufWriter::new(file.deref_mut()))
-                                .with_compression(options.compression)
-                                .with_compat_level(options.compat_level)
-                                .finish(&mut df)?;
-
-                            if let Writeable::Local(file) = &mut file {
-                                polars_io::utils::sync_on_close::sync_on_close(
-                                    sink_options.sync_on_close,
-                                    file,
-                                )?;
-                            }
-
-                            file.close()?;
-
-                            Ok(None)
-                        }),
-                    })),
-                    #[cfg(feature = "csv")]
-                    FileType::Csv(options) => Ok(Box::new(SinkExecutor {
-                        input,
-                        name: "csv".to_string(),
-                        f: Box::new(move |mut df, _state| {
-                            use std::io::BufWriter;
-                            use std::ops::DerefMut;
-
-                            use polars_io::SerWriter;
-                            use polars_io::csv::write::CsvWriter;
-
-                            if sink_options.mkdir {
-                                mkdir_recursive(path.as_path())?;
-                            }
-
-                            let path = path.as_ref().display().to_string();
-                            let mut file = polars_io::utils::file::Writeable::try_new(
-                                &path,
-                                cloud_options.as_ref(),
-                            )?;
-                            CsvWriter::new(BufWriter::new(file.deref_mut()))
-                                .include_bom(options.include_bom)
-                                .include_header(options.include_header)
-                                .with_separator(options.serialize_options.separator)
-                                .with_line_terminator(
-                                    options.serialize_options.line_terminator.clone(),
-                                )
-                                .with_quote_char(options.serialize_options.quote_char)
-                                .with_batch_size(options.batch_size)
-                                .with_datetime_format(
-                                    options.serialize_options.datetime_format.clone(),
-                                )
-                                .with_date_format(options.serialize_options.date_format.clone())
-                                .with_time_format(options.serialize_options.time_format.clone())
-                                .with_float_scientific(options.serialize_options.float_scientific)
-                                .with_float_precision(options.serialize_options.float_precision)
-                                .with_null_value(options.serialize_options.null.clone())
-                                .with_quote_style(options.serialize_options.quote_style)
-                                .finish(&mut df)?;
-
-                            if let Writeable::Local(file) = &mut file {
-                                polars_io::utils::sync_on_close::sync_on_close(
-                                    sink_options.sync_on_close,
-                                    file,
-                                )?;
-                            }
-                            file.close()?;
-
-                            Ok(None)
-                        }),
-                    })),
-                    #[cfg(feature = "json")]
-                    FileType::Json(_) => Ok(Box::new(SinkExecutor {
-                        input,
-                        name: "ndjson".to_string(),
-                        f: Box::new(move |mut df, _state| {
-                            use std::io::BufWriter;
-                            use std::ops::DerefMut;
-
-                            use polars_io::SerWriter;
-                            use polars_io::json::{JsonFormat, JsonWriter};
-
-                            if sink_options.mkdir {
-                                mkdir_recursive(path.as_path())?;
-                            }
-
-                            let path = path.as_ref().display().to_string();
-                            let mut file = polars_io::utils::file::Writeable::try_new(
-                                &path,
-                                cloud_options.as_ref(),
-                            )?;
-                            JsonWriter::new(BufWriter::new(file.deref_mut()))
-                                .with_json_format(JsonFormat::JsonLines)
-                                .finish(&mut df)?;
-
-                            if let Writeable::Local(file) = &mut file {
-                                polars_io::utils::sync_on_close::sync_on_close(
-                                    sink_options.sync_on_close,
-                                    file,
-                                )?;
-                            }
-
-                            file.close()?;
-
-                            Ok(None)
-                        }),
-                    })),
+                    }))
                 },
+
                 SinkTypeIR::Partition { .. } => {
                     polars_bail!(InvalidOperation:
                         "partition sinks not yet supported in standard engine."
@@ -441,7 +413,7 @@ fn create_physical_plan_impl(
                     }
             }
             let input = recurse!(input, state)?;
-            let mut state = ExpressionConversionState::new(true, state.expr_depth);
+            let mut state = ExpressionConversionState::new(true);
             let predicate = create_physical_expr(
                 &predicate,
                 Context::Default,
@@ -464,21 +436,19 @@ fn create_physical_plan_impl(
             output_schema,
             scan_type,
             predicate,
-            mut file_options,
+            mut unified_scan_args,
         } => {
-            file_options.pre_slice = if let Some((offset, len)) = file_options.pre_slice {
-                Some((offset, _set_n_rows_for_scan(Some(len)).unwrap()))
+            unified_scan_args.pre_slice = if let Some(mut slice) = unified_scan_args.pre_slice {
+                *slice.len_mut() = _set_n_rows_for_scan(Some(slice.len())).unwrap();
+                Some(slice)
             } else {
-                _set_n_rows_for_scan(None).map(|x| (0, x))
+                _set_n_rows_for_scan(None)
+                    .map(|len| polars_utils::slice_enum::Slice::Positive { offset: 0, len })
             };
 
-            let mut state = ExpressionConversionState::new(true, state.expr_depth);
-            let do_new_multifile = (sources.len() > 1 || hive_parts.is_some())
-                && !matches!(&*scan_type, FileScan::Anonymous { .. })
-                && std::env::var("POLARS_NEW_MULTIFILE").as_deref() == Ok("1");
+            let mut state = ExpressionConversionState::new(true);
 
             let mut create_skip_batch_predicate = false;
-            create_skip_batch_predicate |= do_new_multifile;
             #[cfg(feature = "parquet")]
             {
                 create_skip_batch_predicate |= matches!(
@@ -506,76 +476,28 @@ fn create_physical_plan_impl(
                 })
                 .transpose()?;
 
-            if do_new_multifile {
-                return Ok(Box::new(executors::MultiScanExec::new(
-                    sources,
-                    file_info,
-                    hive_parts.map(|h| h.into_statistics()),
-                    predicate,
-                    file_options,
-                    scan_type,
-                )));
-            }
-
             match *scan_type {
-                #[cfg(feature = "csv")]
-                FileScan::Csv { options, .. } => Ok(Box::new(executors::CsvExec {
-                    sources,
-                    file_info,
-                    options,
-                    predicate,
-                    file_options,
-                })),
-                #[cfg(feature = "ipc")]
-                FileScan::Ipc {
-                    options,
-                    cloud_options,
-                    metadata,
-                } => Ok(Box::new(executors::IpcExec {
-                    sources,
-                    file_info,
-                    predicate,
-                    options,
-                    file_options: *file_options,
-                    hive_parts: hive_parts.map(|h| h.into_statistics()),
-                    cloud_options,
-                    metadata,
-                })),
-                #[cfg(feature = "parquet")]
-                FileScan::Parquet {
-                    options,
-                    cloud_options,
-                    metadata,
-                } => Ok(Box::new(executors::ParquetExec::new(
-                    sources,
-                    file_info,
-                    hive_parts.map(|h| h.into_statistics()),
-                    predicate,
-                    options,
-                    cloud_options,
-                    file_options,
-                    metadata,
-                ))),
-                #[cfg(feature = "json")]
-                FileScan::NDJson { options, .. } => Ok(Box::new(executors::JsonExec::new(
-                    sources,
-                    options,
-                    file_options,
-                    file_info,
-                    predicate,
-                ))),
                 FileScan::Anonymous { function, .. } => {
                     Ok(Box::new(executors::AnonymousScanExec {
                         function,
                         predicate,
-                        file_options,
+                        unified_scan_args,
                         file_info,
                         output_schema,
                         predicate_has_windows: state.has_windows,
                     }))
                 },
+                #[allow(unreachable_patterns)]
+                _ => {
+                    let build_func = build_streaming_executor
+                        .expect("invalid build. Missing feature new-streaming");
+                    return build_func(root, lp_arena, expr_arena);
+                },
+                #[allow(unreachable_patterns)]
+                _ => unreachable!(),
             }
         },
+
         Select {
             expr,
             input,
@@ -585,10 +507,7 @@ fn create_physical_plan_impl(
         } => {
             let input_schema = lp_arena.get(input).schema(lp_arena).into_owned();
             let input = recurse!(input, state)?;
-            let mut state = ExpressionConversionState::new(
-                POOL.current_num_threads() > expr.len(),
-                state.expr_depth,
-            );
+            let mut state = ExpressionConversionState::new(POOL.current_num_threads() > expr.len());
             let phys_expr = create_physical_expressions_from_irs(
                 &expr,
                 Context::Default,
@@ -632,7 +551,7 @@ fn create_physical_plan_impl(
                 Context::Default,
                 expr_arena,
                 input_schema.as_ref(),
-                &mut ExpressionConversionState::new(true, state.expr_depth),
+                &mut ExpressionConversionState::new(true),
             )?;
             let input = recurse!(input, state)?;
             Ok(Box::new(executors::SortExec {
@@ -688,14 +607,14 @@ fn create_physical_plan_impl(
                 Context::Default,
                 expr_arena,
                 &input_schema,
-                &mut ExpressionConversionState::new(true, state.expr_depth),
+                &mut ExpressionConversionState::new(true),
             )?;
             let phys_aggs = create_physical_expressions_from_irs(
                 &aggs,
                 Context::Aggregation,
                 expr_arena,
                 &input_schema,
-                &mut ExpressionConversionState::new(true, state.expr_depth),
+                &mut ExpressionConversionState::new(true),
             )?;
 
             let _slice = options.slice;
@@ -804,14 +723,14 @@ fn create_physical_plan_impl(
                 Context::Default,
                 expr_arena,
                 &schema_left,
-                &mut ExpressionConversionState::new(true, state.expr_depth),
+                &mut ExpressionConversionState::new(true),
             )?;
             let right_on = create_physical_expressions_from_irs(
                 &right_on,
                 Context::Default,
                 expr_arena,
                 &schema_right,
-                &mut ExpressionConversionState::new(true, state.expr_depth),
+                &mut ExpressionConversionState::new(true),
             )?;
             let options = Arc::try_unwrap(options).unwrap_or_else(|options| (*options).clone());
 
@@ -826,7 +745,7 @@ fn create_physical_plan_impl(
                             Context::Default,
                             expr_arena,
                             &schema,
-                            &mut ExpressionConversionState::new(false, state.expr_depth),
+                            &mut ExpressionConversionState::new(false),
                         )?;
 
                         let execution_state = ExecutionState::default();
@@ -865,10 +784,8 @@ fn create_physical_plan_impl(
                     .iter()
                     .all(|e| is_elementwise_rec_no_cat_cast(expr_arena.get(e.node()), expr_arena));
 
-            let mut state = ExpressionConversionState::new(
-                POOL.current_num_threads() > exprs.len(),
-                state.expr_depth,
-            );
+            let mut state =
+                ExpressionConversionState::new(POOL.current_num_threads() > exprs.len());
 
             let phys_exprs = create_physical_expressions_from_irs(
                 &exprs,

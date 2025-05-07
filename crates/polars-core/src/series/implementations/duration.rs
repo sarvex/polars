@@ -57,14 +57,18 @@ impl private::PrivateSeries for SeriesWrap<DurationChunked> {
         self.0.physical().into_total_ord_inner()
     }
 
-    fn vec_hash(&self, random_state: PlRandomState, buf: &mut Vec<u64>) -> PolarsResult<()> {
+    fn vec_hash(
+        &self,
+        random_state: PlSeedableRandomStateQuality,
+        buf: &mut Vec<u64>,
+    ) -> PolarsResult<()> {
         self.0.vec_hash(random_state, buf)?;
         Ok(())
     }
 
     fn vec_hash_combine(
         &self,
-        build_hasher: PlRandomState,
+        build_hasher: PlSeedableRandomStateQuality,
         hashes: &mut [u64],
     ) -> PolarsResult<()> {
         self.0.vec_hash_combine(build_hasher, hashes)?;
@@ -179,7 +183,7 @@ impl private::PrivateSeries for SeriesWrap<DurationChunked> {
     fn multiply(&self, rhs: &Series) -> PolarsResult<Series> {
         let tul = self.0.time_unit();
         match rhs.dtype() {
-            DataType::Int64 => Ok((&self.0.0 * rhs.i64().unwrap())
+            DataType::Int64 => Ok((&self.0.phys * rhs.i64().unwrap())
                 .into_duration(tul)
                 .into_series()),
             dt if dt.is_integer() => {
@@ -187,7 +191,7 @@ impl private::PrivateSeries for SeriesWrap<DurationChunked> {
                 self.multiply(&rhs)
             },
             dt if dt.is_float() => {
-                let phys = &self.0.0;
+                let phys = &self.0.phys;
                 let phys_float = phys.cast(dt).unwrap();
                 let out = std::ops::Mul::mul(&phys_float, rhs)?
                     .cast(&DataType::Int64)
@@ -207,8 +211,12 @@ impl private::PrivateSeries for SeriesWrap<DurationChunked> {
                 if tul == *tur {
                     // Returns a constant as f64.
                     Ok(std::ops::Div::div(
-                        &self.0.0.cast(&DataType::Float64).unwrap(),
-                        &rhs.duration().unwrap().0.cast(&DataType::Float64).unwrap(),
+                        &self.0.phys.cast(&DataType::Float64).unwrap(),
+                        &rhs.duration()
+                            .unwrap()
+                            .phys
+                            .cast(&DataType::Float64)
+                            .unwrap(),
                     )?
                     .into_series())
                 } else {
@@ -216,7 +224,7 @@ impl private::PrivateSeries for SeriesWrap<DurationChunked> {
                     self.divide(&rhs)
                 }
             },
-            DataType::Int64 => Ok((&self.0.0 / rhs.i64().unwrap())
+            DataType::Int64 => Ok((&self.0.phys / rhs.i64().unwrap())
                 .into_duration(tul)
                 .into_series()),
             dt if dt.is_integer() => {
@@ -224,7 +232,7 @@ impl private::PrivateSeries for SeriesWrap<DurationChunked> {
                 self.divide(&rhs)
             },
             dt if dt.is_float() => {
-                let phys = &self.0.0;
+                let phys = &self.0.phys;
                 let phys_float = phys.cast(dt).unwrap();
                 let out = std::ops::Div::div(&phys_float, rhs)?
                     .cast(&DataType::Int64)
@@ -331,7 +339,7 @@ impl SeriesTrait for SeriesWrap<DurationChunked> {
                 .as_any_mut()
                 .downcast_mut::<DurationChunked>()
                 .unwrap()
-                .0,
+                .phys,
         ))
     }
 
@@ -531,6 +539,11 @@ impl SeriesTrait for SeriesWrap<DurationChunked> {
     fn clone_inner(&self) -> Arc<dyn SeriesTrait> {
         Arc::new(SeriesWrap(Clone::clone(&self.0)))
     }
+
+    fn find_validity_mismatch(&self, other: &Series, idxs: &mut Vec<IdxSize>) {
+        self.0.find_validity_mismatch(other, idxs)
+    }
+
     fn as_any(&self) -> &dyn Any {
         &self.0
     }

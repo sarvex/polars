@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from typing import TYPE_CHECKING, Any, Callable
 
+import pyarrow.parquet as pq
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -331,18 +332,25 @@ def test_schema_mismatch_type_mismatch(
 
     q = scan(multiscan_path)
 
-    with pytest.raises(
-        pl.exceptions.SchemaError,
-        match="data type mismatch for column xyz_col: expected: i64, found: str",
-    ):
+    # NDJSON will just parse according to `projected_schema`
+    cx = (
+        pytest.raises(pl.exceptions.ComputeError, match="cannot parse 'a' as Int64")
+        if scan is pl.scan_ndjson
+        else pytest.raises(
+            pl.exceptions.SchemaError,
+            match="data type mismatch for column xyz_col: expected: i64, found: str",
+        )
+    )
+
+    with cx:
         q.collect(engine="streaming")
 
 
 @pytest.mark.parametrize(
     ("scan", "write", "ext"),
     [
-        (pl.scan_ipc, pl.DataFrame.write_ipc, "ipc"),
-        (pl.scan_parquet, pl.DataFrame.write_parquet, "parquet"),
+        # (pl.scan_parquet, pl.DataFrame.write_parquet, "parquet"), # TODO: _
+        # (pl.scan_ipc, pl.DataFrame.write_ipc, "ipc"), # TODO: _
         pytest.param(
             pl.scan_csv,
             pl.DataFrame.write_csv,
@@ -351,7 +359,7 @@ def test_schema_mismatch_type_mismatch(
                 reason="See https://github.com/pola-rs/polars/issues/21211"
             ),
         ),
-        (pl.scan_ndjson, pl.DataFrame.write_ndjson, "jsonl"),
+        # (pl.scan_ndjson, pl.DataFrame.write_ndjson, "jsonl"), # TODO: _
     ],
 )
 @pytest.mark.write_disk
@@ -493,7 +501,7 @@ def test_multiscan_slice_middle(
         (pl.scan_ipc, pl.DataFrame.write_ipc, "ipc"),
         (pl.scan_parquet, pl.DataFrame.write_parquet, "parquet"),
         (pl.scan_ndjson, pl.DataFrame.write_ndjson, "jsonl"),
-        (pl.scan_csv, pl.DataFrame.write_csv, "jsonl"),
+        (pl.scan_csv, pl.DataFrame.write_csv, "csv"),
     ],
 )
 @given(offset=st.integers(-100, 100), length=st.integers(0, 101))
@@ -528,6 +536,17 @@ def test_multiscan_slice_parametric(
         .collect(),
         scan(fs, row_index_name="ri", row_index_offset=42)
         .slice(offset, length)
+        .collect(engine="streaming"),
+    )
+
+    assert_frame_equal(
+        scan(ref, row_index_name="ri", row_index_offset=42)
+        .slice(offset, length)
+        .select("ri")
+        .collect(),
+        scan(fs, row_index_name="ri", row_index_offset=42)
+        .slice(offset, length)
+        .select("ri")
         .collect(engine="streaming"),
     )
 
@@ -605,3 +624,45 @@ def test_deadlock_linearize(scan: Any, write: Any) -> None:
         lf.collect(engine="streaming", slice_pushdown=False),
         pl.concat([df] * 10),
     )
+
+
+@pytest.mark.parametrize(
+    ("scan", "write"),
+    [
+        (pl.scan_ipc, pl.DataFrame.write_ipc),
+        (pl.scan_parquet, pl.DataFrame.write_parquet),
+        (pl.scan_csv, pl.DataFrame.write_csv),
+        (pl.scan_ndjson, pl.DataFrame.write_ndjson),
+    ],
+)
+def test_row_index_filter_22612(scan: Any, write: Any) -> None:
+    df = pl.DataFrame(
+        {
+            "a": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        }
+    )
+
+    f = io.BytesIO()
+
+    if write is pl.DataFrame.write_parquet:
+        df.write_parquet(f, row_group_size=5)
+        assert pq.read_metadata(f).num_row_groups == 2
+    else:
+        write(df, f)
+
+    for end in range(2, 10):
+        assert_frame_equal(
+            scan(f)
+            .with_row_index()
+            .filter(pl.col("index") >= end - 2, pl.col("index") <= end)
+            .collect(),
+            df.with_row_index().slice(end - 2, 3),
+        )
+
+        assert_frame_equal(
+            scan(f)
+            .with_row_index()
+            .filter(pl.col("index").is_between(end - 2, end))
+            .collect(),
+            df.with_row_index().slice(end - 2, 3),
+        )

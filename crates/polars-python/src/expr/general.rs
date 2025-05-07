@@ -367,14 +367,6 @@ impl PyExpr {
             .into()
     }
 
-    fn backward_fill(&self, limit: FillNullLimit) -> Self {
-        self.inner.clone().backward_fill(limit).into()
-    }
-
-    fn forward_fill(&self, limit: FillNullLimit) -> Self {
-        self.inner.clone().forward_fill(limit).into()
-    }
-
     #[pyo3(signature = (n, fill_value=None))]
     fn shift(&self, n: Self, fill_value: Option<Self>) -> Self {
         let expr = self.inner.clone();
@@ -469,8 +461,8 @@ impl PyExpr {
             .into()
     }
 
-    fn round(&self, decimals: u32) -> Self {
-        self.inner.clone().round(decimals).into()
+    fn round(&self, decimals: u32, mode: Wrap<RoundMode>) -> Self {
+        self.inner.clone().round(decimals, mode.0).into()
     }
 
     fn round_sig_figs(&self, digits: i32) -> Self {
@@ -764,8 +756,8 @@ impl PyExpr {
         self.inner.clone().rank(options, seed).into()
     }
 
-    fn diff(&self, n: i64, null_behavior: Wrap<NullBehavior>) -> Self {
-        self.inner.clone().diff(n, null_behavior.0).into()
+    fn diff(&self, n: PyExpr, null_behavior: Wrap<NullBehavior>) -> Self {
+        self.inner.clone().diff(n.inner, null_behavior.0).into()
     }
 
     #[cfg(feature = "pct_change")]

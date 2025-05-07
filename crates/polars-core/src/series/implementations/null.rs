@@ -3,6 +3,7 @@ use std::any::Any;
 use polars_error::constants::LENGTH_LIMIT_MSG;
 
 use self::compare_inner::TotalOrdInner;
+use super::*;
 use crate::prelude::compare_inner::{IntoTotalEqInner, TotalEqInner};
 use crate::prelude::*;
 use crate::series::private::{PrivateSeries, PrivateSeriesNumeric};
@@ -33,6 +34,10 @@ impl NullChunked {
                 len,
             ))],
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.length as usize
     }
 }
 impl PrivateSeriesNumeric for NullChunked {
@@ -126,14 +131,18 @@ impl PrivateSeries for NullChunked {
         StatisticsFlags::empty()
     }
 
-    fn vec_hash(&self, random_state: PlRandomState, buf: &mut Vec<u64>) -> PolarsResult<()> {
+    fn vec_hash(
+        &self,
+        random_state: PlSeedableRandomStateQuality,
+        buf: &mut Vec<u64>,
+    ) -> PolarsResult<()> {
         VecHash::vec_hash(self, random_state, buf)?;
         Ok(())
     }
 
     fn vec_hash_combine(
         &self,
-        build_hasher: PlRandomState,
+        build_hasher: PlSeedableRandomStateQuality,
         hashes: &mut [u64],
     ) -> PolarsResult<()> {
         VecHash::vec_hash_combine(self, build_hasher, hashes)?;
@@ -329,6 +338,10 @@ impl SeriesTrait for NullChunked {
 
     fn clone_inner(&self) -> Arc<dyn SeriesTrait> {
         Arc::new(self.clone())
+    }
+
+    fn find_validity_mismatch(&self, other: &Series, idxs: &mut Vec<IdxSize>) {
+        ChunkNestingUtils::find_validity_mismatch(self, other, idxs)
     }
 
     fn as_any(&self) -> &dyn Any {

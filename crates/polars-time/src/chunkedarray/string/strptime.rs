@@ -1,18 +1,17 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 //! Much more opinionated, but also much faster strptrime than the one given in Chrono.
-//!
-use std::sync::LazyLock;
 
 use chrono::{NaiveDate, NaiveDateTime};
-use regex::Regex;
 
 use crate::chunkedarray::{PolarsResult, polars_bail};
 
-static HOUR_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[_-]?[HkIl]").unwrap());
-static MINUTE_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[_-]?M").unwrap());
-static SECOND_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[_-]?S").unwrap());
-static TWELVE_HOUR_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[_-]?[Il]").unwrap());
-static MERIDIEM_PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%[_-]?[pP]").unwrap());
+polars_utils::regex_cache::cached_regex! {
+    static HOUR_PATTERN = r"%[_-]?[HkIl]";
+    static MINUTE_PATTERN = r"%[_-]?M";
+    static SECOND_PATTERN = r"%[_-]?S";
+    static TWELVE_HOUR_PATTERN = r"%[_-]?[Il]";
+    static MERIDIEM_PATTERN = r"%[_-]?[pP]";
+}
 
 #[inline]
 fn update_and_parse<T: atoi_simd::Parse>(
@@ -24,7 +23,7 @@ fn update_and_parse<T: atoi_simd::Parse>(
     let new_offset = offset + incr;
     let bytes = vals.get(offset..new_offset)?;
     let (val, parsed) = atoi_simd::parse_any(bytes).ok()?;
-    if parsed == 0 {
+    if parsed != incr {
         None
     } else {
         Some((val, new_offset))
@@ -221,18 +220,27 @@ pub(super) fn fmt_len(fmt: &[u8]) -> Option<u16> {
                     b'S' => cnt += 2,
                     b'9' => {
                         cnt += 9;
-                        debug_assert_eq!(iter.next(), Some(&b'f'));
-                        return Some(cnt);
+                        if matches!(iter.next(), Some(&b'f')) && iter.next().is_none() {
+                            return Some(cnt);
+                        } else {
+                            return None;
+                        }
                     },
                     b'6' => {
                         cnt += 6;
-                        debug_assert_eq!(iter.next(), Some(&b'f'));
-                        return Some(cnt);
+                        if matches!(iter.next(), Some(&b'f')) && iter.next().is_none() {
+                            return Some(cnt);
+                        } else {
+                            return None;
+                        }
                     },
                     b'3' => {
                         cnt += 3;
-                        debug_assert_eq!(iter.next(), Some(&b'f'));
-                        return Some(cnt);
+                        if matches!(iter.next(), Some(&b'f')) && iter.next().is_none() {
+                            return Some(cnt);
+                        } else {
+                            return None;
+                        }
                     },
                     _ => return None,
                 },

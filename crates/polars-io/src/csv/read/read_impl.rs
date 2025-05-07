@@ -92,6 +92,8 @@ pub fn cast_columns(
                 df.try_apply_at_idx(idx, |s| cast_fn(s, fld))?;
             }
         }
+
+        df.clear_schema();
     }
     Ok(())
 }
@@ -147,7 +149,7 @@ impl<'a> CoreReader<'a> {
         ignore_errors: bool,
         schema: Option<SchemaRef>,
         columns: Option<Arc<[PlSmallStr]>>,
-        mut n_threads: Option<usize>,
+        n_threads: Option<usize>,
         schema_overwrite: Option<SchemaRef>,
         dtype_overwrite: Option<Arc<Vec<DataType>>>,
         chunk_size: usize,
@@ -200,7 +202,6 @@ impl<'a> CoreReader<'a> {
                     skip_lines,
                     skip_rows_after_header,
                     raise_if_empty,
-                    &mut n_threads,
                 )?;
                 Arc::new(inferred_schema)
             },
@@ -405,8 +406,9 @@ impl<'a> CoreReader<'a> {
                 debug_assert!(count == 0 || b[position] == self.parse_options.eol_char);
 
                 let (b, count) = if count == 0
-                    && unsafe { b.as_ptr().add(b.len()) == bytes.as_ptr().add(bytes.len()) }
-                {
+                    && unsafe {
+                        std::ptr::eq(b.as_ptr().add(b.len()), bytes.as_ptr().add(bytes.len()))
+                    } {
                     total_offset = bytes.len();
                     (b, 1)
                 } else {
@@ -448,13 +450,13 @@ impl<'a> CoreReader<'a> {
                                 // We cannot use the line count as there can be comments in the lines so we must correct line counts later.
                                 if let Some(rc) = &slf.row_index {
                                     // is first chunk
-                                    let offset = if b.as_ptr() == bytes.as_ptr() {
+                                    let offset = if std::ptr::eq(b.as_ptr(), bytes.as_ptr()) {
                                         Some(rc.offset)
                                     } else {
                                         None
                                     };
 
-                                    df.with_row_index_mut(rc.name.clone(), offset);
+                                    unsafe { df.with_row_index_mut(rc.name.clone(), offset) };
                                 };
 
                                 if let Some(predicate) = slf.predicate.as_ref() {
